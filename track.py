@@ -65,41 +65,46 @@ class trackDef:
             nx *= self.width
             ny *= self.width
             px, py = seg.p
-            boundsxo.append(px - ny)
-            boundsyo.append(py + nx)
-            boundsxi.append(px + ny)
-            boundsyi.append(py - nx)
+            boundsxo.append((px - ny) - self.segments[0].p[0])
+            boundsyo.append((py + nx) - self.segments[0].p[1])
+            boundsxi.append((px + ny) - self.segments[0].p[0])
+            boundsyi.append((py - nx) - self.segments[0].p[1])
         
         return (boundsxi, boundsyi, boundsxo, boundsyo)
 
-    def getCurvePyplot(self, density):
-        px, py, c = [],[],[]
+    # returns list of distances
+    def getCurvePoints(self):
+        is_in_curve = False
+        current_distance = 0
+        center_distances = []
 
-        for i in range(density):
-            d = self.getDistance(float(i) / density)
-            curve = self.getCurve(d)
-            c.append(abs(curve))
-            x, y = self.getPoint(d)
-            px.append(x)
-            py.append(y)    
+        curve_start_distance = 0
+        av_curvature = 0
 
-        return px, py, c
+        for seg in self.segments:
+            if abs(seg.c) < 0.08:
+                if is_in_curve:
+                    is_in_curve = False
+                    delta = current_distance - curve_start_distance
+                    center_distances.append((curve_start_distance, curve_start_distance + (delta * 0.5), current_distance, av_curvature))
+            else:
+                if not is_in_curve:
+                    is_in_curve = True
+                    av_curvature = seg.c
+                    curve_start_distance = current_distance
 
-    def getRacingLine(self, density):
-        px, py, c = [],[],[]
+            current_distance += 1 / TRACKDENSITY
 
-        for i in range(density):
-            d = self.getDistance(float(i) / density)
-            tan = self.getNormal(d)
-            norm = (tan[1], -tan[0])
-            curve = self.getCurve(d)
-            c.append(abs(curve))
-            x, y = self.getPoint(d)
-            px.append(x)
-            py.append(y)    
+        return center_distances
+    
+    def get_curvetrack(self):
+        segs = []
+        for l,r in self.defs:
+            sw = l/r if r != 0 else l
+            turn = 1 if r > 0 else 0 if r < 0 else -1
 
-        return px, py, c
-
+            segs.append([1 if turn != -1 else 0,abs(sw),abs(r),turn])
+        return segs
 
 def normalize(x,y):
     return (x / (x*x + y*y) ** 0.5, y / (x*x + y*y) ** 0.5)
@@ -173,7 +178,6 @@ def trackFromBezierCSV(fp, width):
                     segments.append(segment(point, curve, norm))
 
                     lastPushedDist = float(len(segments) - 1) / TRACKDENSITY
-                    lastPushedPoint = point
                     
                 lastnorm = nn
                 lastpoint = np
@@ -262,8 +266,6 @@ def toTangentCurve(track):
 
         distline = ((p4[0] - p0[0])**2 + (p4[1] - p0[1])**2) ** 0.5
 
-        print(i, l, angle)
-
         defs.extend([(distline, 0), (l, r)])
 
     segments = []
@@ -274,7 +276,8 @@ def toTangentCurve(track):
         lp = math.ceil(l * 4)
         dl = l / lp
 
-        print(l,r)
+        typ = 0 if r < 0 else 1 if r > 0 else -1
+        sw = l if r == 0 else (l/r)
 
         if r == 0:
             firstpos = lastpos
@@ -290,9 +293,12 @@ def toTangentCurve(track):
                 lastpos = (center[0] + (math.cos(angle) * r), center[1] + (math.sin(angle) * r))
                 lastnorm = (math.sin(angle), -math.cos(angle))
                 segments.append(segment(lastpos, 1.0/r, lastnorm))
-                
-    return trackDef(segments, 0, track.width)
 
+    track2 = trackDef(segments, 0, track.width)
+
+    track2.defs = defs
+    
+    return track2 
 
 if __name__ == '__main__':
     track = trackFromBezierCSV("defaulttrack.csv", 1.5)
@@ -306,8 +312,8 @@ if __name__ == '__main__':
     track2 = toTangentCurve(track)
     axi, ayi, axo, ayo = track2.getBoundsPyplot()
 
-    rcx, rcy, cs = track2.getRacingLine(1000)
-    plt.scatter(rcx, rcy, c=cs)
+    #rcx, rcy, cs = track2.getRacingLine(1000)
+    #plt.scatter(rcx, rcy, c=cs)
     
     plt.plot(axi, ayi, c='blue')
     plt.plot(axo, ayo, c='blue')

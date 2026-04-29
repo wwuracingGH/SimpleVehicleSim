@@ -89,7 +89,7 @@ class vehicle:
         max_tire_g = 0
 
         i = 0
-        while(max_tire_g < max_motor_g and i < 5):
+        while(max_tire_g < max_motor_g and i < 10):
             lon_pos = this.lon_load_transfer.f(max_tire_g)
             lon_neg = 1 - this.lon_load_transfer.f(max_tire_g)
             lat_pos = this.lat_load_transfer.f(0)
@@ -111,6 +111,58 @@ class vehicle:
 
         return min(max_motor_g, max_tire_g)
          
+    def max_lat_accel_g(this, velocity : float):
+        lat_g = 1.0
+        d_force = this.get_downforce(velocity) + (this.mass * 9.81)
+
+        for i in range(0, 5):
+            lon_pos = this.lon_load_transfer.f(0)
+            lon_neg = 1 - this.lon_load_transfer.f(0)
+            lat_pos = this.lat_load_transfer.f(lat_g)
+            lat_neg = 1 - this.lat_load_transfer.f(lat_g)
+
+            normal_force_rr = lon_neg * lat_pos * d_force
+            normal_force_lr = lon_neg * lat_neg * d_force
+            normal_force_rf = lon_pos * lat_pos * d_force
+            normal_force_lf = lon_pos * lat_neg * d_force
+
+            max_tire_force = this.coeff_fric_lat.f(normal_force_rr) * normal_force_rr
+            max_tire_force += this.coeff_fric_lat.f(normal_force_lr) * normal_force_lr
+            max_tire_force += this.coeff_fric_lat.f(normal_force_rf) * normal_force_rf
+            max_tire_force += this.coeff_fric_lat.f(normal_force_lf) * normal_force_lf
+            lat_g = max_tire_force / (this.mass * 9.81)
+        
+        return lat_g
+
+
+    def max_braking_accel_g(this, velocity):
+        max_tire_g = 0
+
+        d_force = this.get_downforce(velocity) + (this.mass * 9.81)
+        
+        i = 0
+        while(i < 5):
+            lon_pos = this.lon_load_transfer.f(max_tire_g)
+            lon_neg = 1 - this.lon_load_transfer.f(max_tire_g)
+            lat_pos = this.lat_load_transfer.f(0)
+            lat_neg = 1 - this.lat_load_transfer.f(0)
+
+            normal_force_rr = lon_neg * lat_pos * d_force
+            normal_force_lr = lon_neg * lat_neg * d_force
+            normal_force_rf = lon_pos * lat_pos * d_force
+            normal_force_lf = lon_pos * lat_neg * d_force
+
+            max_tire_force = this.coeff_fric_lon.f(normal_force_rr) * normal_force_rr
+            max_tire_force += this.coeff_fric_lon.f(normal_force_lr) * normal_force_lr
+            max_tire_force += this.coeff_fric_lon.f(normal_force_rf) * normal_force_rf
+            max_tire_force += this.coeff_fric_lon.f(normal_force_lf) * normal_force_lf
+            max_tire_g = max_tire_force / (this.mass * 9.81)
+            
+            i += 1
+
+        return max_tire_g
+          
+
     def get_drag(this, velocity):
         return (this.downforce_area * (velocity**2))
 
@@ -120,31 +172,52 @@ class vehicle:
     def get_downforce(this, velocity):
         return (this.downforce_area * (velocity**2))
 
-    def plot_elipse(this, velocity : float):
-        t = np.linspace(0, 360, 360)
-        
+    def plot_elipse(this, ax):
+        t = np.linspace(0, 360, 60)
+        velocity = np.linspace(0.001, 6500 / (60 * this.final_drive_ratio) * this.tire_circumference, 20)
+
         df_mult = ((this.mass * 9.81) + this.get_downforce(velocity)) / (this.mass * 9.81)
+        
+        xvals = []
+        yvals = []
+        zvals = []
 
-        x = this.coeff_fric_lat.f(df_mult / 2) * df_mult * np.cos(np.radians(t))
-        y = this.coeff_fric_lon.f(df_mult / 2) * df_mult * np.sin(np.radians(t))
+        for v in velocity:
+            x = this.max_lat_accel_g(v) * np.cos(np.radians(t))
+            y = this.max_braking_accel_g(v) * np.sin(np.radians(t))
+            mv = this.max_accel_g(v, 100)
+            y = np.array(list(map((lambda n : min(n, mv)), y)))
+            xvals.append(x)
+            yvals.append(y)
+            zvals.append([v] * len(x))
 
-        mv = this.max_accel_g(velocity, 100)
+        ax.scatter(xvals,yvals,zvals)
 
-        y = np.array(list(map((lambda n : min(n, mv)), y)))
+    def plot_powersurface(this, ax):
+        soc = np.linspace(5, 100, 20)
+        velocity = np.linspace(0.001, 6500 / (60 * this.final_drive_ratio) * this.tire_circumference, 250)
+        
+        x, y = np.meshgrid(velocity, soc)
+        z = np.array([[this.max_accel_g(v,c) for v in velocity] for c in soc])
 
-        plt.plot(x,y, color=matplotlib.colors.hsv_to_rgb(((velocity / 60.0), 1, 1)))
+        ax.set_xlabel("speed (m/s)")
+        ax.set_ylabel("state of charge (%)")
+        ax.set_zlabel("accel (G)")
+        ax.plot_surface(x, y, z, rstride=20, cstride=10, cmap=matplotlib.cm.coolwarm)
 
 if __name__ == '__main__':
-    v = vehicle(280, 2, 1.5, polynomial([-0.0001, 1.7]), polynomial([1.25]), 0.22,
+    v = vehicle(280, 2, 1.5, polynomial([-0.0001, 1.5]), polynomial([1.25]), 0.23,
                 polynomial([0.5]), polynomial([0.5]), 
-                4.0, polynomial([0.94]), 0.98, 
+                3.3, polynomial([0.94]), 0.98, 
                 0.5, 0.5, 
-                300, polynomial([80000]), 6.2, #[7.01587e-7, 0, 0.0793916, -19.2291, 1525.91552, 0]), 6.2
+                300, polynomial([7.01587e-7, 0, 0.0793916, -19.2291, 1525.91552, 0]), 6.2, True
                 )
     
-    plt.gca().set_aspect('equal')
-    for i in range(0, 9):
-        v.plot_elipse(float(i * 5) + 2.43) #7312455278365)
+    fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
+   
+    max_speed = 6500 / (60 * v.final_drive_ratio) * v.tire_circumference
 
-    plt.title("Max accleration at speed")
+    v.plot_elipse(ax)
+
+    plt.title("Max accleration at speed and SOC")
     plt.show()
