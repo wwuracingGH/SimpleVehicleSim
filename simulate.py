@@ -105,6 +105,7 @@ class Simulation:
                 print("\033[2F")
                 print("\033[2F")
                 print("\033[2F")
+                print("\033[2F")
  
                 if (zto60time < 0):
                     if (velocity >= 26.8224):
@@ -114,8 +115,9 @@ class Simulation:
                     print("zero to 60mph time: " + str(zto60time))
                
                 toprint = " " * spaces
-                
-                print(vehicledata.max_accel_g(velocity, 70))
+
+                print("accel in g: " + str(vehicledata.max_accel_g(velocity, 100)))
+                print("torque req: " + str(vehicledata.max_accel_g(velocity, 100) * 9.8 * vehicledata.mass * vehicledata.wheel_radius / vehicledata.final_drive_ratio))
                 print(str(float(int(time * 1000)) / 1000) + ": " + str(float(int(velocity * 100)) / 100) + "m/s")
                 print(toprint + " /| __")
                 print(toprint + "⌾════⌾")
@@ -143,10 +145,10 @@ if __name__ == '__main__':
                 coeff_fric_lat    = polynomial([-0.00005, 1.45]), 
                 wheel_radius      = 0.20,
                 # Suspension 
-                lon_load_transfer = polynomial([-0.178571, 0.50]), 
+                lon_load_transfer = polynomial([-0.2, 0.50]), 
                 lat_load_transfer = polynomial([0.5]), 
                 # Drivetrain
-                final_drive_ratio = 4, 
+                final_drive_ratio = 3, 
                 motor_efficiency  = polynomial([0.94]), 
                 drive_efficiency  = 0.95, 
                 # Aero
@@ -162,4 +164,4 @@ if __name__ == '__main__':
     
     track = toTangentCurve(trackFromBezierCSV("defaulttrack.csv", 1.5))
     #Simulation.calculate_racing_line(track)
-    Simulation.run_accel_basic(car, 402.336)
+    Simulation.run_accel_basic(car, 75)
