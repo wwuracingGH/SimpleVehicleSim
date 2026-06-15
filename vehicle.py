@@ -82,7 +82,7 @@ class vehicle:
 
         max_motor_torque = min(this.max_torque, this.max_power_per_soc.f(soc) * 9.54929677 / (motor_rps * 60))
         max_motor_force = max_motor_torque * this.final_drive_ratio / this.wheel_radius
-        max_motor_force *= this.drive_efficiency
+        max_motor_force *= this.drive_efficiency * this.motor_efficiency.f(velocity)
         max_motor_force -= this.get_drag(velocity)
         max_motor_g = max_motor_force / (this.mass * 9.81)
        

@@ -140,7 +140,7 @@ def cBezierCurvature(ps, t):
 #     print(str(p.co.x) + "," + str(p.co.y) + "," + str(p.handle_right.x) + "," + str(p.handle_right.y))
 #     print(str(p.co.x) + "," + str(p.co.y) + "," + str(p.handle_left.x) + "," + str(p.handle_left.y), end=",")
 
-def trackFromBezierCSV(fp, width):
+def trackFromBezierCSV(fp, width, scale_factor=1.0):
     segments = []
     lastdist = 0
     lastPushedDist = 0
@@ -153,7 +153,7 @@ def trackFromBezierCSV(fp, width):
             pv = line.replace('\n', '').split(',')
             bp = []
             for i in range(0, len(pv), 2):
-                bp.append((float(pv[i]), float(pv[i+1])))
+                bp.append((float(pv[i]) * scale_factor, float(pv[i+1]) * scale_factor))
 
             if(len(segments) == 0):
                 segments.append(segment(cBezierPoint(bp, 0), cBezierCurvature(bp, 0), cBezierNormal(bp, 0)))
@@ -185,7 +185,7 @@ def trackFromBezierCSV(fp, width):
     
     return trackDef(segments, lastdist, width)
 
-def toTangentCurve(track):
+def toTangentCurve(track, one_way = False):
     lastnorm = track.segments[0].n
     lastpos = track.segments[0].p
     lastcurve = track.segments[0].c
@@ -209,7 +209,7 @@ def toTangentCurve(track):
 
         heading = math.acos(norm[0])
 
-        if abs(curve) < 0.04 or (curve * lastcurve) <= 0:
+        if abs(curve) < 0.032 or (curve * lastcurve) <= 0:
             if isinstraight:
                 pass  
             else:
@@ -229,7 +229,7 @@ def toTangentCurve(track):
                     startnorm = ((pos[0] - straightStart[0]) / lengthofnorm, (pos[1] - straightStart[1]) / lengthofnorm) 
                 straights.append([straightStart, pos])
 
-    for i in range(len(straights)):
+    for i in range(len(straights) - (1 if one_way else 0)):
         p0, p1 = straights[i][0], straights[i][1]
         p2, p3 = straights[i - len(straights) + 1][0], straights[i - len(straights) + 1][1]
         norm1 = (p1[0] - p0[0], p1[1] - p0[1])
@@ -272,7 +272,11 @@ def toTangentCurve(track):
     lastpos = startpos
     lastnorm = startnorm
 
+    total_dist = 0
+
     for l,r in defs:
+        total_dist += l
+        print('length: ' + str(round(l * 1000) / 1000) + '\tradius: ' + str(round(r * 1000) / 1000))
         lp = math.ceil(l * 4)
         dl = l / lp
 
@@ -296,12 +300,13 @@ def toTangentCurve(track):
 
     track2 = trackDef(segments, 0, track.width)
 
+    print("distance traveled in 1 lap: " + str(total_dist))
     track2.defs = defs
     
     return track2 
 
 if __name__ == '__main__':
-    track = trackFromBezierCSV("defaulttrack.csv", 1.5)
+    track = trackFromBezierCSV("autocrosstrack.csv", 1.5)
     bxi, byi, bxo, byo = track.getBoundsPyplot()
 
     plt.gca().set_aspect('equal')
@@ -309,7 +314,7 @@ if __name__ == '__main__':
     plt.plot(bxi, byi, c='black')
     plt.plot(bxo, byo, c='black')
 
-    track2 = toTangentCurve(track)
+    track2 = toTangentCurve(track, True)
     axi, ayi, axo, ayo = track2.getBoundsPyplot()
 
     #rcx, rcy, cs = track2.getRacingLine(1000)

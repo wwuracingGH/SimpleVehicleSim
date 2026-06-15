@@ -83,6 +83,8 @@ class Simulation:
         dt = 0.005
         velocity = 0.01
         distance = 0
+        
+        power_used = 0
 
         display_travel_length = 60
         space_per_m = float(display_travel_length) / length
@@ -91,12 +93,14 @@ class Simulation:
 
         print("\n")
  
-        print(" /| __" + " " * 94 + "|")
-        print("⌾════⌾" + " " * 94 + "|")       
+        print(" /| __" + " " * display_travel_length + "|")
+        print("⌾════⌾" + " " * display_travel_length + "|")       
         while distance < length:
             time += dt
-            velocity += vehicledata.max_accel_g(velocity, 100) * 9.81 * dt
+            acceleration = vehicledata.max_accel_g(velocity, 100) * 9.81 
+            velocity += acceleration * dt
             distance += velocity * dt
+            power_used += vehicledata.mass * acceleration * velocity * dt * (1 / (vehicledata.drive_efficiency * vehicledata.motor_efficiency.f(0)));
 
             if spaces < int(space_per_m * distance):
                 spaces = int(space_per_m * distance)
@@ -117,7 +121,7 @@ class Simulation:
                 toprint = " " * spaces
 
                 print("accel in g: " + str(vehicledata.max_accel_g(velocity, 100)))
-                print("torque req: " + str(vehicledata.max_accel_g(velocity, 100) * 9.8 * vehicledata.mass * vehicledata.wheel_radius / vehicledata.final_drive_ratio))
+                print("torque req: " + str(vehicledata.max_accel_g(velocity, 100) * 9.81 * vehicledata.mass * vehicledata.wheel_radius / vehicledata.final_drive_ratio))
                 print(str(float(int(time * 1000)) / 1000) + ": " + str(float(int(velocity * 100)) / 100) + "m/s")
                 print(toprint + " /| __")
                 print(toprint + "⌾════⌾")
@@ -126,42 +130,56 @@ class Simulation:
 
         
         print("YOU COMPLETED ACCEL IN " + str(float(int(time * 1000)) / 1000) + " SECONDS")
-        T_MAX = 5.436
-        T_MIN = 3.642
+
+        power_used /= 3600000
+        print("POWER USED: " + str(float(round(power_used * 1000)) / 1000) + 'kWh')
+        
+        T_MAX_2024 = 5.436
+        T_MIN_2024 = 3.642
         SCORES_2024 = [100, 69.95, 65.37, 64.49, 62.45, 59.11, 52.95, 51.64, 51.52, 51.23, 49.43, 47.14, 46.15, 39.91, 36.13, 34.56, 32.07, 31.3, 29.58, 29.08, 26.69, 26.09, 19.66, 19.57, 9.37, 8.98, 5.91]
 
-        accel_score = 95.5 * ((T_MAX/time) - 1)/((T_MAX/T_MIN) - 1) + 4.5
+
+        accel_score = 95.5 * ((T_MAX_2024/time) - 1)/((T_MAX_2024/T_MIN_2024) - 1) + 4.5
         placement = next(i for i,d in enumerate(SCORES_2024) if d < accel_score)
 
-        print("FINAL SCORE: " + str(float(int(accel_score * 100)) / 100) + ", YOU GOT " + str(placement + 1) + "TH PLACE!")
+        print("2024 SCORE: " + str(float(int(accel_score * 100)) / 100) + ", YOU GOT " + str(placement + 1) + "TH PLACE!")
+
+        T_MIN_2025 = 3.821
+        T_MAX_2025 = 5.732
+        SCORES_2025 = [100, 99.89, 96.5, 95.59, 83.96, 81.34, 76.71, 75.36, 71.46, 69.83, 69.5, 59.12, 58.68, 54.19, 48.78, 48.67, 48.21, 46.84, 44.4, 32.45, 30.42, 24.8, 19.5, 6.26, 4.5, 4.5]
+
+        accel_score = 95.5 * ((T_MAX_2025/time) - 1)/((T_MAX_2025/T_MIN_2025) - 1) + 4.5
+        placement = next(i for i,d in enumerate(SCORES_2025) if d < accel_score)
+
+        print("2025 SCORE: " + str(float(int(accel_score * 100)) / 100) + ", YOU GOT " + str(placement + 1) + "TH PLACE!")
 
 if __name__ == '__main__':
     car = vehicle(
-                mass              = 280, 
-                wheelbase         = 1.54, 
+                mass              = 273.5, 
+                wheelbase         = 1.4, 
                 trackwidth        = 1.180,
                 # Tires
                 coeff_fric_lon    = polynomial([-0.00005, 1.45]), 
-                coeff_fric_lat    = polynomial([-0.00005, 1.45]), 
+                coeff_fric_lat    = polynomial([-0.00005, 1.40]), 
                 wheel_radius      = 0.20,
                 # Suspension 
-                lon_load_transfer = polynomial([-0.2, 0.50]), 
+                lon_load_transfer = polynomial([-0.234, 0.46]), 
                 lat_load_transfer = polynomial([0.5]), 
                 # Drivetrain
                 final_drive_ratio = 3, 
-                motor_efficiency  = polynomial([0.94]), 
+                motor_efficiency  = polynomial([0.87]), 
                 drive_efficiency  = 0.95, 
                 # Aero
                 drag_area         = 0.0, 
                 downforce_area    = 0.0, 
                 # High Voltage
-                max_torque        = 230, 
-                max_power_per_soc = polynomial([76000]), 
+                max_torque        = 220, 
+                max_power_per_soc = polynomial([80000]), 
                 capacity          = 6.2, 
                 # All wheel drive
                 AWD=False
             )
     
-    track = toTangentCurve(trackFromBezierCSV("defaulttrack.csv", 1.5))
+    #track = toTangentCurve(trackFromBezierCSV("defaulttrack.csv", 1.5))
     #Simulation.calculate_racing_line(track)
     Simulation.run_accel_basic(car, 75)
