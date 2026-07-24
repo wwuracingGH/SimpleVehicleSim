@@ -1,14 +1,24 @@
 from track import trackDef, trackFromBezierCSV, normalize, toTangentCurve
-from vehicle import vehicle, polynomial
+from vehicle import vehicle, polynomial, lookuptable_2D
 from scipy.optimize import minimize, NonlinearConstraint
 from scipy.integrate import odeint
+from Scores import CompetitionScores, print_event_results, print_all_events
 import numpy as np
+import sys
 
 import matplotlib.pyplot as plt
 import matplotlib
 
 import math
 from time import sleep
+
+from common import *
+
+Scores2023 = CompetitionScores('Scores2023.csv', '2023')
+Scores2024 = CompetitionScores('Scores2024.csv', '2024')
+Scores2025 = CompetitionScores('Scores2025.csv', '2025')
+Scores2026 = CompetitionScores('Scores2026.csv', '2026')
+AllComp = [Scores2023, Scores2024, Scores2025, Scores2026]
 
 class Simulation:
     def change_in_s(u, v, xi, curve, n):
@@ -26,7 +36,6 @@ class Simulation:
     def change_in_v_over_t(mass, yawrate, u, force_v):
         return (mass*yawrate*u + force_v) / mass
 
-    
     def force_u(steeringangle, tireforces, drag):
         cd, sd = cos(steeringangle), sin(steeringangle)
         Fflx, Ffly, Ffrx, Ffry, Frlx, Frly, Frrx, Frry = tireforces 
@@ -47,6 +56,9 @@ class Simulation:
 
     def change_in_w_over_s(ds, dw_t):
         return (1.0/ds) * dw_t
+
+    def run_endurance(self, vehicledata):
+        pass
 
     def __init__(self, vehicledata : vehicle, track : trackDef):
         self.vehicledata = vehicledata
@@ -76,13 +88,25 @@ class Simulation:
         self.Sp_d = [track.length / 80] * 80
         self.Up_mat = [(0, 0, 0)] * 80 # control variable vector
         self.Xp_mat = []
+
+    @staticmethod
+    def run_skidpad_basic(vehicledata : vehicle, radius):
+        v = 0
+        for i in range(0, 10):
+            ml_accel = vehicledata.max_lat_accel_g(v) * 9.81
+            v = math.sqrt(ml_accel * radius)
+
+        time = (radius * 2 * math.pi) / (v * 0.98)
         
+        return time
+
     @staticmethod
     def run_accel_basic(vehicledata : vehicle, length : float):
-        time = 0
+        print('\n')
+        time = 0.05 # idk startup time or something
         dt = 0.005
-        velocity = 0.01
-        distance = 0
+        velocity = 0.001
+        distance = -0.3
         
         power_used = 0
 
@@ -91,16 +115,26 @@ class Simulation:
         spaces = 0
         zto60time = -1
 
+        vpoints = []
+        tpoints = []
+        times = []
+
         print("\n")
  
         print(" /| __" + " " * display_travel_length + "|")
         print("⌾════⌾" + " " * display_travel_length + "|")       
         while distance < length:
-            time += dt
-            acceleration = vehicledata.max_accel_g(velocity, 100) * 9.81 
+            acceleration, torque_req = vehicledata.max_accel_g(velocity, 100)
+            acceleration *= 9.81
+            if distance >= -0.0001:
+                time += dt
+            else: # some sort of arbitrary ramp ig
+                acceleration *= 1/0.5 * (0.5 + distance)
+                torque_req   *= 1/0.5 * (0.5 + distance)
+
             velocity += acceleration * dt
             distance += velocity * dt
-            power_used += vehicledata.mass * acceleration * velocity * dt * (1 / (vehicledata.drive_efficiency * vehicledata.motor_efficiency.f(0)));
+            power_used += vehicledata.mass * acceleration * velocity * dt * (1 / vehicledata.drivetrain_efficiency_at(acceleration, velocity))
 
             if spaces < int(space_per_m * distance):
                 spaces = int(space_per_m * distance)
@@ -116,70 +150,80 @@ class Simulation:
                         zto60time = time
                 else:
                     print("\033[2F")
-                    print("zero to 60mph time: " + str(zto60time))
+                    print("zero to 60mph time: " + str(round(zto60time * 100) / 100))
                
                 toprint = " " * spaces
 
-                print("accel in g: " + str(vehicledata.max_accel_g(velocity, 100)))
-                print("torque req: " + str(vehicledata.max_accel_g(velocity, 100) * 9.81 * vehicledata.mass * vehicledata.wheel_radius / vehicledata.final_drive_ratio))
-                print(str(float(int(time * 1000)) / 1000) + ": " + str(float(int(velocity * 100)) / 100) + "m/s")
+
+                print("accel in g: " + str(acceleration / 9.806))
+                print("torque req: " + str(torque_req))
+                print(str(float(int(time * 1000)) / 1000) + ": " + str(float(int(velocity * 100)) / 100) + "m/s           ")
                 print(toprint + " /| __")
                 print(toprint + "⌾════⌾")
-            
-            sleep(dt)
 
+            sleep(dt / 2)
+
+            vpoints.append(vehicledata.rpm_from_velocity(velocity))
+            tpoints.append(torque_req)
+            times.append(time)
         
-        print("YOU COMPLETED ACCEL IN " + str(float(int(time * 1000)) / 1000) + " SECONDS")
-
         power_used /= 3600000
         print("POWER USED: " + str(float(round(power_used * 1000)) / 1000) + 'kWh')
         
-        T_MAX_2024 = 5.436
-        T_MIN_2024 = 3.642
-        SCORES_2024 = [100, 69.95, 65.37, 64.49, 62.45, 59.11, 52.95, 51.64, 51.52, 51.23, 49.43, 47.14, 46.15, 39.91, 36.13, 34.56, 32.07, 31.3, 29.58, 29.08, 26.69, 26.09, 19.66, 19.57, 9.37, 8.98, 5.91]
-
-
-        accel_score = 95.5 * ((T_MAX_2024/time) - 1)/((T_MAX_2024/T_MIN_2024) - 1) + 4.5
-        placement = next(i for i,d in enumerate(SCORES_2024) if d < accel_score)
-
-        print("2024 SCORE: " + str(float(int(accel_score * 100)) / 100) + ", YOU GOT " + str(placement + 1) + "TH PLACE!")
-
-        T_MIN_2025 = 3.821
-        T_MAX_2025 = 5.732
-        SCORES_2025 = [100, 99.89, 96.5, 95.59, 83.96, 81.34, 76.71, 75.36, 71.46, 69.83, 69.5, 59.12, 58.68, 54.19, 48.78, 48.67, 48.21, 46.84, 44.4, 32.45, 30.42, 24.8, 19.5, 6.26, 4.5, 4.5]
-
-        accel_score = 95.5 * ((T_MAX_2025/time) - 1)/((T_MAX_2025/T_MIN_2025) - 1) + 4.5
-        placement = next(i for i,d in enumerate(SCORES_2025) if d < accel_score)
-
-        print("2025 SCORE: " + str(float(int(accel_score * 100)) / 100) + ", YOU GOT " + str(placement + 1) + "TH PLACE!")
+        return vpoints, tpoints, times, time
 
 if __name__ == '__main__':
     car = vehicle(
-                mass              = 273.5, 
-                wheelbase         = 1.4, 
-                trackwidth        = 1.180,
+                mass              = 280, 
+                wheelbase         = 1.540, 
+                trackwidth        = 1.175,
+                cg_height         = 0.272,
+                cg_bal            = 0.52, 
                 # Tires
-                coeff_fric_lon    = polynomial([-0.00005, 1.45]), 
-                coeff_fric_lat    = polynomial([-0.00005, 1.40]), 
-                wheel_radius      = 0.20,
-                # Suspension 
-                lon_load_transfer = polynomial([-0.234, 0.46]), 
-                lat_load_transfer = polynomial([0.5]), 
+                coeff_fric_lon    = polynomial([1.40]), 
+                coeff_fric_lat    = polynomial([1.35]), 
+                wheel_radius      = 0.20, 
                 # Drivetrain
-                final_drive_ratio = 3, 
-                motor_efficiency  = polynomial([0.87]), 
-                drive_efficiency  = 0.95, 
+                final_drive_ratio = 3.0, 
+                pack_efficiency   = lookuptable_2D([[1,1],[1,1]]),
+                motor_efficiency  = EMRAX228_Efficiency, 
+                drive_efficiency  = 0.90, 
+                max_regen_watts   = polynomial([5000]),
                 # Aero
-                drag_area         = 0.0, 
+                drag_area         = 0.8, 
                 downforce_area    = 0.0, 
                 # High Voltage
-                max_torque        = 220, 
-                max_power_per_soc = polynomial([80000]), 
-                capacity          = 6.2, 
+                max_torque        = EMRAX228_MaxTorque,
+                max_power_per_soc = polynomial([75000]), 
+                capacity          = 5.8,
                 # All wheel drive
                 AWD=False
             )
-    
+
+    c_sc =  90 # assuming cost report isn't ignored
+    d_sc = 100 # a reasonable design score if we get our shit together
+    p_sc =  50 # a reasonable score ig
+    # test
+    # print_all_events(90.2, 18.8, 65, 4.860, 5.548, 50.077, 1602.185, 3.563, AllComp)
+ 
+    vp, tp, tm, accel_time = Simulation.run_accel_basic(car, 75)
+    print_event_results(CompetitionScores.NAMES_ACCEL, accel_time * 1.02, AllComp) 
+    skidpad_time = Simulation.run_skidpad_basic(car, 9)
+    print_event_results(CompetitionScores.NAMES_SKID, skidpad_time * 1.02, AllComp)
+
+    print_all_events(c_sc, p_sc, d_sc, accel_time, skidpad_time, 48, 1450, 3.8, AllComp)
+
+    xinterp,yinterp = np.meshgrid(np.linspace(0,6500,50), np.linspace(0,250,50))
+    zinterp = np.fromfunction(lambda x, y : car.motor_efficiency.f(6500 * y/49, 250 * x/49), (50,50))
+
+    fig, ax = plt.subplots()
+    CS = ax.contour(xinterp,yinterp,zinterp, levels=[0.7,0.75,0.8,0.86,0.90,0.94,0.95,0.96])
+    ax.clabel(CS, fontsize=10)
+    ax.set_title('contours')
+
+    plt.scatter(vp, tp, c=tm, cmap='prism')
+    plt.colorbar()
+
+    plt.show()
     #track = toTangentCurve(trackFromBezierCSV("defaulttrack.csv", 1.5))
     #Simulation.calculate_racing_line(track)
-    Simulation.run_accel_basic(car, 75)

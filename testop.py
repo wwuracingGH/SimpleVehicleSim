@@ -13,10 +13,11 @@ from dymos.examples.racecar.Track import Track  # track curvature imports
 
 from track import trackDef, trackFromBezierCSV, toTangentCurve 
 
-track2 = trackFromBezierCSV("defaulttrack.csv", 2.0)
+track2 = trackFromBezierCSV("defaulttrack.csv", 3.5, 1.515)
 track2 = toTangentCurve(track2)
 segments = np.array(track2.get_curvetrack())
 
+print(segments)
 curvetrack_starting_normal = track2.getNormal(0)
 curvetrack_starting_position = track2.getPoint(0)
 
@@ -30,6 +31,7 @@ points = get_track_points(track, initial_direction=np.array(curvetrack_starting_
 finespline, gates, gatesd, curv, slope = get_spline(points, s=0.0)
 # by default 10000 points
 s_final = track.get_total_length()
+print('actual track distance: ' + str(s_final))
 
 # Define the OpenMDAO problem
 p = om.Problem(model=om.Group())
@@ -40,7 +42,7 @@ p.model.add_subsystem('traj', subsys=traj)
 
 # Define a Dymos Phase object with GaussLobatto Transcription
 phase = dm.Phase(ode_class=CombinedODE,
-                 transcription=dm.GaussLobatto(num_segments=70, order=3, compressed=True))
+                 transcription=dm.GaussLobatto(num_segments=300, order=3, compressed=True))
 
 traj.add_phase(name='phase0', phase=phase)
 
@@ -58,11 +60,11 @@ phase.set_integ_var_options(fix_initial=True, fix_duration=True, duration_val=s_
 # Define states
 phase.add_state('t', fix_initial=True, fix_final=False, units='s', lower=0,
                 rate_source='dt_ds', ref=100)  # time
-phase.add_state('n', fix_initial=False, fix_final=False, units='m', upper=1, lower=-1,
+phase.add_state('n', fix_initial=False, fix_final=False, units='m', upper=1.5, lower=-1.5,
                 rate_source='dn_ds', targets=['n'],
                 ref=1)  # normal distance to centerline. The bounds on n define the
 # width of the track
-phase.add_state('V', fix_initial=False, fix_final=False, upper=47, units='m/s', ref=40, ref0=5,
+phase.add_state('V', fix_initial=False, fix_final=False, upper=45, units='m/s', ref=40, ref0=5,
                 rate_source='dV_ds', targets=['V'])  # velocity
 phase.add_state('alpha', fix_initial=False, fix_final=False, units='rad',
                 rate_source='dalpha_ds', targets=['alpha'],
@@ -86,7 +88,7 @@ phase.add_control(name='thrust', units=None, fix_initial=False, fix_final=False,
 
 # Performance Constraints
 pmax = 80000  # W
-phase.add_path_constraint('power', upper=pmax, ref=100000)  # engine power limit
+phase.add_path_constraint('power', upper=pmax, ref=10000)  # engine power limit
 
 # The following four constraints are the tire friction limits, with 'rr' designating the
 # rear right wheel etc. This limit is computed in tireConstraintODE.py
@@ -97,20 +99,35 @@ phase.add_path_constraint('c_fl', upper=1)
 
 # Some of the vehicle design parameters are available to set here. Other parameters can
 # be found in their respective ODE files.
-phase.add_parameter('M', val=200.0, units='kg', opt=False,
+phase.add_parameter('M', val=280.0, units='kg', opt=False,
                     targets=['car.M', 'tire.M', 'tireconstraint.M', 'normal.M'],
                     static_target=True)  # vehicle mass
+
+phase.add_parameter('mu0_x', val=1.40, units=None, opt=False, targets=['tireconstraint.mu0_x'],
+                    static_target=True)  # brake bias
+phase.add_parameter('mu0_y', val=1.35, units=None, opt=False, targets=['tireconstraint.mu0_y'],
+                    static_target=True)  # brake bias
+phase.add_parameter('a', val=0.82, units=None, opt=False, targets=['tire.a', 'tireconstraint.a', 'normal.a'],
+                    static_target=True)  # brake bias
+phase.add_parameter('b', val=0.72, units=None, opt=False, targets=['tire.b', 'tireconstraint.b', 'normal.b'],
+                    static_target=True)  # brake bias
+phase.add_parameter('tw', val=0.60, units=None, opt=False, targets=['tire.tw', 'normal.tw'],
+                    static_target=True)  # half trackwidth
+phase.add_parameter('k_lambda', val=40, units=None, opt=False, targets=['tire.k_lambda'],
+                    static_target=True)  # tire stiffness (cornering)
 phase.add_parameter('beta', val=0.62, units=None, opt=False, targets=['tire.beta'],
                     static_target=True)  # brake bias
+
+
 phase.add_parameter('CoP', val=1.6, units='m', opt=False, targets=['normal.CoP'],
                     static_target=True)  # center of pressure location
-phase.add_parameter('h', val=0.2, units='m', opt=False, targets=['normal.h'],
+phase.add_parameter('h', val=0.272, units='m', opt=False, targets=['normal.h'],
                     static_target=True)  # center of gravity height
-phase.add_parameter('chi', val=1.5, units=None, opt=False, targets=['normal.chi'],
+phase.add_parameter('chi', val=1.0, units=None, opt=False, targets=['normal.chi'],
                     static_target=True)  # roll stiffness
-phase.add_parameter('ClA', val=0.1, units='m**2', opt=False, targets=['normal.ClA'],
+phase.add_parameter('ClA', val=0.0, units='m**2', opt=False, targets=['normal.ClA'],
                     static_target=True)  # downforce coefficient*area
-phase.add_parameter('CdA', val=0.4, units='m**2', opt=False, targets=['car.CdA'],
+phase.add_parameter('CdA', val=0.5, units='m**2', opt=False, targets=['car.CdA'],
                     static_target=True)  # drag coefficient*area
 
 # Minimize final time.
@@ -125,7 +142,7 @@ phase.add_timeseries_output('t', output_name='time')
 p.driver = om.pyOptSparseDriver(optimizer='IPOPT')
 
 p.driver.opt_settings['mu_init'] = 1e-3
-p.driver.opt_settings['max_iter'] = 400
+p.driver.opt_settings['max_iter'] = 10000
 p.driver.opt_settings['acceptable_tol'] = 1e-3
 p.driver.opt_settings['constr_viol_tol'] = 1e-3
 p.driver.opt_settings['compl_inf_tol'] = 1e-3
@@ -157,7 +174,7 @@ phase.set_state_val('ax', 0.0, units='m/s**2')
 phase.set_state_val('ay', 0.0, units='m/s**2')
 phase.set_state_val('n', 0.0, units='m')
 # initial guess for what the final time should be
-phase.set_state_val('t', [0.0, 100], units='s')
+phase.set_state_val('t', [0.0, 50.0], units='s')
 
 # Controls
 # a small amount of thrust can speed up convergence
@@ -274,7 +291,6 @@ def plot_track_with_data(state, s):
     plt.grid()
 
 plot_track_with_data(V, s)
-plt.scatter(p_ax, p_ay)
 plt.show()
 
 #car_path_x = [x + curvetrack_starting_position[0] for x in displaced_spline[0]]
