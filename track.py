@@ -11,10 +11,11 @@ def lerp(a, b, t):
     return (1-t) * a + t * b
 
 class segment:
-    def __init__(self, point, curvature, normal):
+    def __init__(self, point, curvature, normal, dist = 0):
         self.p = point
         self.c = curvature
         self.n = normal
+        self.s = dist
 
 class trackDef:
     def __init__(self, segments, length, halfwidth):
@@ -175,7 +176,7 @@ def trackFromBezierCSV(fp, width, scale_factor=1.0):
                     point = cBezierPoint(bp, nt)
                     norm  = cBezierNormal(bp, nt)
 
-                    segments.append(segment(point, curve, norm))
+                    segments.append(segment(point, curve, norm, nd))
 
                     lastPushedDist = float(len(segments) - 1) / TRACKDENSITY
                     
@@ -184,6 +185,16 @@ def trackFromBezierCSV(fp, width, scale_factor=1.0):
                 lastdist = nd
     
     return trackDef(segments, lastdist, width)
+
+def trackToMatlab(track, fp):
+    with open(fp, 'w') as fp:
+        fp.write("x,y,k,s,dk\n")
+        
+        last_s = 0
+        for s in track.segments:
+            fp.write(str(s.p[0]) + ',' + str(s.p[1]) + ',' + str(s.c) + ',' + str(s.s) + ',' + str((s.s - last_s) * TRACKDENSITY) + '\n')
+            last_s = s.s
+            
 
 def toTangentCurve(track, one_way = False):
     lastnorm = track.segments[0].n
@@ -209,7 +220,7 @@ def toTangentCurve(track, one_way = False):
 
         heading = math.acos(norm[0])
 
-        if abs(curve) < 0.032 or (curve * lastcurve) <= 0:
+        if abs(curve) < 0.022 or (curve * lastcurve) <= 0:
             if isinstraight:
                 pass  
             else:
@@ -268,16 +279,26 @@ def toTangentCurve(track, one_way = False):
 
         defs.extend([(distline, 0), (l, r)])
 
+    segments, total_dist = segs_from_defs(defs, startpos, startnorm)
+    track2 = trackDef(segments, 0, track.width)
+
+    print("distance traveled in 1 lap: " + str(total_dist))
+    track2.defs = defs
+    
+    return track2 
+
+def segs_from_defs(defs, startpos, startnorm):  
     segments = []
     lastpos = startpos
     lastnorm = startnorm
 
     total_dist = 0
 
-    for l,r in defs:
-        total_dist += l
+    segments.append(segment(startpos, 0, startnorm, 0))
+
+    for _i,(l,r) in enumerate(defs):
         print('length: ' + str(round(l * 1000) / 1000) + '\tradius: ' + str(round(r * 1000) / 1000))
-        lp = math.ceil(l * 4)
+        lp = max(math.ceil(l * 4), 8)
         dl = l / lp
 
         typ = 0 if r < 0 else 1 if r > 0 else -1
@@ -287,7 +308,8 @@ def toTangentCurve(track, one_way = False):
             firstpos = lastpos
             for i in range(1, lp + 1):
                 lastpos = ((firstpos[0] + (lastnorm[0] * i * dl)), (firstpos[1] + (lastnorm[1] * i * dl)))
-                segments.append(segment(lastpos, 0, lastnorm))
+                segments.append(segment(lastpos, 0, lastnorm, total_dist + dl * i))
+                #segments[-1].c = (0 + (1.0/defs[_i - len(defs) + 1][1])) / 2.0
         else:
             center = ((lastpos[0] + (r * lastnorm[1])), (lastpos[1] - (r * lastnorm[0])))
             sangle = math.atan2(lastnorm[0], -lastnorm[1])
@@ -296,33 +318,100 @@ def toTangentCurve(track, one_way = False):
                 angle = sangle - (i * dl / r)
                 lastpos = (center[0] + (math.cos(angle) * r), center[1] + (math.sin(angle) * r))
                 lastnorm = (math.sin(angle), -math.cos(angle))
-                segments.append(segment(lastpos, 1.0/r, lastnorm))
+                segments.append(segment(lastpos, -1.0/r, lastnorm, total_dist + dl * i))
+                next_r = defs[_i - len(defs) + 1][1]
+                #segments[-1].c = ((1.0/r) + (1.0/next_r if next_r != 0 else 0)) / 2.0
+        total_dist += l
+        
+    return segments, total_dist
 
-    track2 = trackDef(segments, 0, track.width)
-
-    print("distance traveled in 1 lap: " + str(total_dist))
-    track2.defs = defs
+def objective_func(track):
+    x_point = track.segments[0].p[0]
+    y_point = track.segments[0].p[1]
     
-    return track2 
+    print(x_point, y_point)
+    xp, yp = [x_point], [y_point] 
+    
+    theta = math.atan2(track.segments[0].n[1], track.segments[0].n[0])
+    
+    for i in range(1, len(track.segments)):  
+        ds = track.segments[i].s - track.segments[i - 1].s
+        
+        av_c = track.segments[i].c # (track.segments[i].c + track.segments[i - 1].c) * 0.5
+        theta += av_c * ds
+        
+        dx = math.cos(theta) * ds
+        dy = math.sin(theta) * ds
+        
+        x_point += dx
+        y_point += dy
+        
+        xp.append(x_point)
+        yp.append(y_point)
+        
+        track.segments[i].p = (x_point, y_point)
+    
+    return (xp, yp) 
 
+def parse_csv(fp):
+    cols = {}
+    with open(fp) as f:
+        colnames = f.readline().replace('\n', '').split(',')
+        for c in colnames:
+            print(c)
+            cols[c] = []
+        
+        line = f.readline()
+        
+        while len(line) > 2:
+            dat = line.replace('\n', '').split(',')
+            for i,c in enumerate(dat):
+                cols[colnames[i]].append(float(c))
+            line = f.readline()
+        
+    return cols 
+
+def TrackFromLR(fp, width):
+    d = parse_csv(fp)
+    print(d.keys())
+    defs = list(zip(d['l'], d['r']))
+    segments, dist = segs_from_defs(defs, (0,0), (1, 0))
+    return trackDef(segments, dist, width)
+ 
 if __name__ == '__main__':
-    track = trackFromBezierCSV("autocrosstrack.csv", 1.5)
-    bxi, byi, bxo, byo = track.getBoundsPyplot()
-
+    track = trackFromBezierCSV("defaulttrack.csv", 1.5, 1.511)
+    print(track.length)
+    
     plt.gca().set_aspect('equal')
+    trackToMatlab(track, "testout.csv")
+    
+    xp, yp = objective_func(track)
+    plt.plot(xp, yp)
+    #track = TrackFromLR('autoXlr.csv', 1.5)
+#    bxi, byi, bxo, byo = track.getBoundsPyplot()
 
-    plt.plot(bxi, byi, c='black')
-    plt.plot(bxo, byo, c='black')
 
-    track2 = toTangentCurve(track, True)
-    axi, ayi, axo, ayo = track2.getBoundsPyplot()
+
+#    plt.plot(bxi, byi, c='black')
+#    plt.plot(bxo, byo, c='black')
+
+#    track2 = toTangentCurve(track, False)
+#    axi, ayi, axo, ayo = track2.getBoundsPyplot()
 
     #rcx, rcy, cs = track2.getRacingLine(1000)
     #plt.scatter(rcx, rcy, c=cs)
     
-    plt.plot(axi, ayi, c='blue')
-    plt.plot(axo, ayo, c='blue')
+#    plt.plot(axi, ayi, c='blue')
+#    plt.plot(axo, ayo, c='blue')
 
+#    print()
+    
+#    xp, yp = objective_func(track2)
+#    plt.plot(xp, yp)
+    
+#    trackToMatlab(track2, 'testout.csv')
+
+    
 
     #plt.scatter(px, py, c=col)
     #for i in range(len(col)):
