@@ -20,3 +20,30 @@ EMRAX228_Efficiency = lookuptable_2D(
     xmax = EMRAX228_MaxRPM,
     ymax = 250
 )
+
+VEHICLE_V67 = vehicle(
+            mass              = 280, 
+            wheelbase         = 1.540, 
+            trackwidth        = 1.175,
+            cg_height         = 0.272,
+            cg_bal            = 0.52, 
+            # Tires
+            coeff_fric_lon    = polynomial([1.40]), 
+            coeff_fric_lat    = polynomial([1.35]), 
+            wheel_radius      = 0.20, 
+            # Drivetrain
+            final_drive_ratio = 3.0, 
+            pack_efficiency   = lookuptable_2D([[1,1],[1,1]]),
+            motor_efficiency  = EMRAX228_Efficiency, 
+            drive_efficiency  = 0.90, 
+            max_regen_watts   = polynomial([5000]),
+            # Aero
+            drag_area         = 0.8, 
+            downforce_area    = 0.0, 
+            # High Voltage
+            max_torque        = EMRAX228_MaxTorque,
+            max_power_per_soc = polynomial([75000]), 
+            capacity          = 5.8,
+            # All wheel drive
+            AWD=False
+        )

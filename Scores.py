@@ -2,18 +2,20 @@ import numpy
 from typing import Callable
 
 class Event:
-    def __init__(this, scores : list[float], scorefunc : Callable[[float], float]):
+    def __init__(this, scores : list[float], scorefunc : Callable[[float], float], max_score, min_score=0):
         this.scores_origional = scores
         this.scores_sorted = sorted(scores, reverse=True)
         this.scorefunc = scorefunc
+        this.max_score = max_score
+        this.min_score = min_score
     
     def get_placement(this, time : float):
-        score = max(this.scorefunc(time),0)
+        score = max(this.scorefunc(time), 1)
         placement = next((i for i,d in enumerate(this.scores_sorted) if d < score)) + 1
         return placement
 
     def get_score(this, time : float):
-        return this.scorefunc(time)
+        return min(max(this.scorefunc(time), this.min_score), this.max_score)
 
 
 def print_event_results(eventname : str, time : float, years : list[CompetitionScores]):
@@ -114,15 +116,15 @@ class CompetitionScores:
             this.raw_cols = cols
             
             this.events : dict[str, Event] = {}
-            this.events[this.NAMES_COST]   = Event(cols[this.NAMES_COST],   lambda x: x)
-            this.events[this.NAMES_DESIGN] = Event(cols[this.NAMES_DESIGN], lambda x: x)
-            this.events[this.NAMES_PRES]   = Event(cols[this.NAMES_PRES],   lambda x: x)
-            this.events[this.NAMES_ACCEL]  = Event(cols[this.NAMES_ACCEL],  lambda x: 95.5 * ((this.maxtime_accel/x) - 1)/((this.maxtime_accel/this.mintime_accel) - 1) + 4.5)
-            this.events[this.NAMES_SKID]   = Event(cols[this.NAMES_SKID],   lambda x: 71.5 * ((this.maxtime_skid/x)**2 - 1)/((this.maxtime_skid/this.mintime_skid)**2 - 1) + 3.5)
-            this.events[this.NAMES_AUTOX]  = Event(cols[this.NAMES_AUTOX],  lambda x: 118.5 * ((this.maxtime_autox/x) - 1)/((this.maxtime_autox/this.mintime_autox) - 1) + 6.5)
-            this.events[this.NAMES_ENDURO] = Event(cols[this.NAMES_ENDURO], lambda x: 250 * ((this.maxtime_enduro/x) - 1)/((this.maxtime_enduro/this.mintime_enduro) - 1) + 25)
-            this.events[this.NAMES_EFF]    = Event(cols[this.NAMES_EFF],    lambda x: 100 * ((x - this.minfac_eff) / (this.maxfac_eff - this.minfac_eff)))
-            this.events[this.NAMES_TOTAL]  = Event(cols[this.NAMES_TOTAL],  lambda x: x)
+            this.events[this.NAMES_COST]   = Event(cols[this.NAMES_COST],   lambda x: x, max_score=100)
+            this.events[this.NAMES_DESIGN] = Event(cols[this.NAMES_DESIGN], lambda x: x, max_score=150)
+            this.events[this.NAMES_PRES]   = Event(cols[this.NAMES_PRES],   lambda x: x, max_score=75)
+            this.events[this.NAMES_ACCEL]  = Event(cols[this.NAMES_ACCEL],  lambda x: 95.5 * ((this.maxtime_accel/x) - 1)/((this.maxtime_accel/this.mintime_accel) - 1) + 4.5, 100, 4.5)
+            this.events[this.NAMES_SKID]   = Event(cols[this.NAMES_SKID],   lambda x: 71.5 * ((this.maxtime_skid/x)**2 - 1)/((this.maxtime_skid/this.mintime_skid)**2 - 1) + 3.5, 75, 3.5)
+            this.events[this.NAMES_AUTOX]  = Event(cols[this.NAMES_AUTOX],  lambda x: 118.5 * ((this.maxtime_autox/x) - 1)/((this.maxtime_autox/this.mintime_autox) - 1) + 6.5, 125)
+            this.events[this.NAMES_ENDURO] = Event(cols[this.NAMES_ENDURO], lambda x: 250 * ((this.maxtime_enduro/x) - 1)/((this.maxtime_enduro/this.mintime_enduro) - 1) + 25, 275, 25)
+            this.events[this.NAMES_EFF]    = Event(cols[this.NAMES_EFF],    lambda x: 100 * ((x - this.minfac_eff) / (this.maxfac_eff - this.minfac_eff)), max_score=100)
+            this.events[this.NAMES_TOTAL]  = Event(cols[this.NAMES_TOTAL],  lambda x: x, max_score=1000)
 
     def EventPlacement(this, name : str, time : float):
         return this.events[name].get_placement(time)

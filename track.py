@@ -2,6 +2,7 @@ import math
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
+from scipy import signal
 
 TRACKDENSITY = 4 #how many line segments per meter
 
@@ -18,7 +19,7 @@ class segment:
         self.s = dist
 
 class trackDef:
-    def __init__(self, segments, length, halfwidth):
+    def __init__(self, segments : list[segments], length, halfwidth):
         self.segments = segments
         self.length = ((len(segments) - 1) / TRACKDENSITY)
         self.width = halfwidth
@@ -195,6 +196,11 @@ def trackToMatlab(track, fp):
             fp.write(str(s.p[0]) + ',' + str(s.p[1]) + ',' + str(s.c) + ',' + str(s.s) + ',' + str((s.s - last_s) * TRACKDENSITY) + '\n')
             last_s = s.s
             
+def safediv(x,y):
+    try:
+        return x / y
+    except:
+        return math.copysign(float('inf'), x) 
 
 def toTangentCurve(track, one_way = False):
     lastnorm = track.segments[0].n
@@ -220,7 +226,7 @@ def toTangentCurve(track, one_way = False):
 
         heading = math.acos(norm[0])
 
-        if abs(curve) < 0.022 or (curve * lastcurve) <= 0:
+        if abs(curve) < 0.020 or (curve * lastcurve) <= 0:
             if isinstraight:
                 pass  
             else:
@@ -239,10 +245,24 @@ def toTangentCurve(track, one_way = False):
                     lengthofnorm = ((pos[0] - straightStart[0]) ** 2 + (pos[1] - straightStart[1]) ** 2) ** 0.5
                     startnorm = ((pos[0] - straightStart[0]) / lengthofnorm, (pos[1] - straightStart[1]) / lengthofnorm) 
                 straights.append([straightStart, pos])
+                plt.plot([straightStart[0], pos[0]], [straightStart[1], pos[1]])
+
+    plt.gca().set_aspect('equal')
+    plt.show()
 
     for i in range(len(straights) - (1 if one_way else 0)):
         p0, p1 = straights[i][0], straights[i][1]
         p2, p3 = straights[i - len(straights) + 1][0], straights[i - len(straights) + 1][1]
+
+        if (p0[0] == p1[0]):
+            p1 = (p1[0] + 0.000000001, p1[1])
+        if (p0[1] == p1[1]):
+            p1 = (p1[0], p1[1] + 0.000000001)
+        if (p2[0] == p3[0]):
+            p3 = (p3[0] + 0.000000001, p3[1])
+        if (p2[1] == p3[1]):
+            p3 = (p3[0], p3[1] + 0.000000001)
+
         norm1 = (p1[0] - p0[0], p1[1] - p0[1])
         norm2 = (p3[0] - p2[0], p3[1] - p2[1])
 
@@ -255,13 +275,14 @@ def toTangentCurve(track, one_way = False):
         angle = math.atan2(norm1[1],norm1[0]) - math.atan2(norm2[1],norm2[0])
         if abs(angle) > math.pi:
             angle = (2 * math.pi - abs(angle)) * angle/abs(angle)
-        
+
         slope1 = norm1[1]/norm1[0]
         slope2 = norm2[1]/norm2[0]
         slope3 = - 1.0 / slope1 
         slope4 = - 1.0 / slope2
 
         x_intersection = ((p1[1] - p2[1]) + (slope2 * p2[0] - slope1 * p1[0])) / (slope2 - slope1)
+
         distA = (x_intersection - p1[0]) / norm1[0]
         distB = (x_intersection - p2[0]) / norm2[0]
 
@@ -286,6 +307,52 @@ def toTangentCurve(track, one_way = False):
     track2.defs = defs
     
     return track2 
+
+def from_points(points, dists):
+    headings = []
+    for i in range(len(points)):
+        ibefore = i - 1
+        iafter = (i + 1) % len(points)
+
+        n1 = (points[i][0] - points[ibefore][0], points[i][1] - points[ibefore][1])
+        n1_len = math.sqrt(n1[0]**2 + n1[1]**2)
+        n1 = (n1[0]/n1_len, n1[1]/n1_len)
+
+        n2 = (points[iafter][0] - points[i][0], points[iafter][1] - points[i][1])
+        n2_len = math.sqrt(n2[0]**2 + n2[1]**2)
+        n2 = (n2[0]/n2_len, n2[1]/n2_len)
+
+        n3 = (n1[0] + n2[0], n1[1] + n2[1])
+
+        heading = math.atan2(n3[1], n3[0])
+
+        headings.append(heading)
+
+    curves = []
+    segs = []
+    bs = dists[0]
+    for i in range(len(points)):
+        ibefore = i - 1
+        iafter = (i + 1) % len(points)
+
+        angle1 = math.fmod((headings[i] - headings[ibefore]) + (5 * math.pi), math.pi * 2) - math.pi
+        ds = (dists[i] - dists[ibefore])
+        c1 = angle1 / ds
+
+        angle2 = math.fmod((headings[iafter] - headings[i]) + (5 * math.pi), math.pi * 2) - math.pi
+        ds = (dists[iafter] - dists[i])
+        c2 = angle2 / ds
+
+        avg = c1
+
+        curves.append(avg)
+
+    curves = [(c + 0.00001) for c in curves]
+
+    for i in range(len(points)):
+        segs.append(segment(points[i], curves[i], normal=(math.cos(headings[i]),math.sin(headings[i])), dist=(dists[i]) - bs))
+
+    return trackDef(segs, 2, (dists[i] - dists[-1]))
 
 def segs_from_defs(defs, startpos, startnorm):  
     segments = []
@@ -353,12 +420,12 @@ def objective_func(track):
     
     return (xp, yp) 
 
-def parse_csv(fp):
+def parse_csv(fp, namefunc= lambda x : x):
     cols = {}
+
     with open(fp) as f:
-        colnames = f.readline().replace('\n', '').split(',')
+        colnames = list(map(lambda x : namefunc(x), f.readline().replace('\n', '').split(',')))
         for c in colnames:
-            print(c)
             cols[c] = []
         
         line = f.readline()
@@ -366,7 +433,10 @@ def parse_csv(fp):
         while len(line) > 2:
             dat = line.replace('\n', '').split(',')
             for i,c in enumerate(dat):
-                cols[colnames[i]].append(float(c))
+                try:
+                    cols[colnames[i]].append(float(c))
+                except:
+                    cols[colnames[i]].append(float('nan'))
             line = f.readline()
         
     return cols 
@@ -379,24 +449,28 @@ def TrackFromLR(fp, width):
     return trackDef(segments, dist, width)
  
 if __name__ == '__main__':
-    track = trackFromBezierCSV("defaulttrack.csv", 1.5, 1.511)
+    track = trackFromBezierCSV("res/tracks/defaulttrack.csv", 3.5, 1.55)
     print(track.length)
     
     plt.gca().set_aspect('equal')
-    trackToMatlab(track, "testout.csv")
     
-    xp, yp = objective_func(track)
-    plt.plot(xp, yp)
-    #track = TrackFromLR('autoXlr.csv', 1.5)
-#    bxi, byi, bxo, byo = track.getBoundsPyplot()
+    bxi, byi, bxo, byo = track.getBoundsPyplot()
 
-
-
-#    plt.plot(bxi, byi, c='black')
-#    plt.plot(bxo, byo, c='black')
+    plt.plot(bxi, byi, c='black')
+    plt.plot(bxo, byo, c='black')
 
 #    track2 = toTangentCurve(track, False)
 #    axi, ayi, axo, ayo = track2.getBoundsPyplot()
+
+    d = parse_csv('res/data/eline.csv')
+    xcp, ycp = [], []
+    a = 1.82
+    for x,y in zip(d['X'], d['Y']):
+        xcp.append(x * math.cos(a) - y * math.sin(a) + 70)
+        ycp.append(x * math.sin(a) + y * math.cos(a) + 40)
+
+
+    plt.plot(xcp,ycp)
 
     #rcx, rcy, cs = track2.getRacingLine(1000)
     #plt.scatter(rcx, rcy, c=cs)

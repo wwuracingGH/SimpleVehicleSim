@@ -6,6 +6,7 @@ import scipy.interpolate as sc
 
 import math, matplotlib
 AIRDENSITY = 1.204
+GRAV       = 9.806
 
 class polynomial:
     def __init__(this, values : list[float]):
@@ -80,6 +81,7 @@ class vehicle:
         this.capacity = capacity
 
         this.tire_circumference = wheel_radius * np.radians(360)
+        this.max_speed = 6500 / (60 * final_drive_ratio) * this.tire_circumference
 
         this.AWD = AWD
 
@@ -89,7 +91,7 @@ class vehicle:
         motor_rps = (velocity / this.tire_circumference) * this.final_drive_ratio
         if motor_rps * 60 > 6500: return 0
         
-        d_force = this.get_downforce(velocity) + (this.mass * 9.806)
+        d_force = this.get_downforce(velocity) + (this.mass * GRAV)
 
         i = 0
         g_t = 1.4
@@ -105,66 +107,72 @@ class vehicle:
             max_tire_g = (g_t * this.cg_bal) / (1 - (g_t * this.cg_height / this.wheelbase))
             if (this.AWD): 
                 max_tire_g += (g_t2 * (1 - this.cg_bal)) / (1 + (g_t2 * this.cg_height / this.wheelbase))
-            max_tire_force = max_tire_g * (this.mass * 9.806)
+            max_tire_force = max_tire_g * (this.mass * GRAV)
             i += 1
 
-        max_tire_g = max_tire_force / (this.mass * 9.806)
+        max_tire_g = max_tire_force / (this.mass * GRAV)
         max_tire_torque = max_tire_force * this.wheel_radius / this.final_drive_ratio
         max_battery_torque = (this.max_power_per_soc.f(soc) * 9.54929677 / (motor_rps * 60))
         max_motor_torque = min(this.max_torque, max_battery_torque) * this.drive_efficiency * this.motor_efficiency.f(motor_rps * 60, min(min(max_battery_torque, max_tire_torque), this.max_torque))
 
         max_motor_force = max_motor_torque * this.final_drive_ratio / this.wheel_radius
         max_motor_force -= this.get_drag(velocity)
-        max_motor_g = max_motor_force / (this.mass * 9.806)
+        max_motor_g = max_motor_force / (this.mass * GRAV)
 
         return min(max_motor_g, max_tire_g), min(max_motor_torque, max_tire_torque)
 
 
     def max_lat_accel_g(this, velocity : float):
-        d_force = this.get_downforce(velocity) + (this.mass * 9.806)
+        mu = this.coeff_fric_lat.values[-1]
+        sens = 0
+        if len(this.coeff_fric_lat.values) == 2:
+            sens = this.coeff_fric_lat.values[0]
 
-        g_t = this.coeff_fric_lat.f(d_force / 4)
-        max_tire_g = (g_t) / (1 - (g_t * this.cg_height / this.wheelbase))
-       
+        if sens == 0:
+            return (mu * this.mass * GRAV + 2 * mu * this.get_downforce(velocity)) / (this.mass * GRAV)
+
+        msg = this.mass * GRAV * sens
+        b = this.trackwidth
+        hsq = this.cg_height * this.cg_height
+        cv2 = this.get_downforce(velocity)
+
+        root = (b * b) - (16 * hsq * sens * cv2 * (mu + sens * cv2 + msg)) - (4 * hsq * msg * (msg + (2 * mu)))
+        root = (b - math.sqrt(root)) * b
+        div = 4 * this.mass * sens * hsq
+
+        return root / div
+
+    def max_velocity_of_c(this, curvature):
+        c = max(this.coeff_fric_lat.values[-1] * GRAV/(this.max_speed**2), abs(curvature))
+
+        radius = 1 / c
+
+        velocity = math.sqrt(this.max_lat_accel_g(0) * GRAV * radius)
         for _ in range(0, 10):
-            lat_pos = (max_tire_g * this.cg_height / this.trackwidth)
+            velocity = math.sqrt(this.max_lat_accel_g(velocity) * GRAV * radius)
 
-            normal_force_l = lat_pos * this.mass * 9.806 + (this.get_downforce(velocity) / 2)
-            normal_force_r = lat_pos * this.mass * 9.806 + (this.get_downforce(velocity) / 2) 
-
-            g_t = this.coeff_fric_lat.f(normal_force_l / 2)
-            g_t2 = this.coeff_fric_lat.f(normal_force_r / 2)
-            max_tire_g = (g_t * 0.5) / (1 - (g_t * this.cg_height / this.wheelbase))
-            max_tire_g += (g_t2 * 0.5) / (1 + (g_t2 * this.cg_height / this.wheelbase))
-
-        return max_tire_g
+        print(velocity, curvature)
+        return velocity 
 
     def max_braking_accel_g(this, velocity):
-        max_tire_g = 0
+        mu = this.coeff_fric_lon.values[-1]
+        sens = 0
+        if len(this.coeff_fric_lon.values) == 2:
+            sens = this.coeff_fric_lon.values[0]
 
-        d_force = this.get_downforce(velocity) + (this.mass * 9.81)
-        
-        i = 0
-        while(i < 5):
-            lon_pos = this.lon_load_transfer.f(max_tire_g)
-            lon_neg = 1 - this.lon_load_transfer.f(max_tire_g)
-            lat_pos = this.lat_load_transfer.f(0)
-            lat_neg = 1 - this.lat_load_transfer.f(0)
+        if sens == 0:
+            return (mu * this.mass * GRAV + 2 * mu * this.get_downforce(velocity)) / (this.mass * GRAV)
 
-            normal_force_rr = lon_neg * lat_pos * d_force
-            normal_force_lr = lon_neg * lat_neg * d_force
-            normal_force_rf = lon_pos * lat_pos * d_force
-            normal_force_lf = lon_pos * lat_neg * d_force
+        msg = this.mass * GRAV * sens
+        b = this.wheelbase
+        hsq = this.cg_height * this.cg_height
+        cv2 = this.get_downforce(velocity)
 
-            max_tire_force = this.coeff_fric_lon.f(normal_force_rr) * normal_force_rr
-            max_tire_force += this.coeff_fric_lon.f(normal_force_lr) * normal_force_lr
-            max_tire_force += this.coeff_fric_lon.f(normal_force_rf) * normal_force_rf
-            max_tire_force += this.coeff_fric_lon.f(normal_force_lf) * normal_force_lf
-            max_tire_g = max_tire_force / (this.mass * 9.81)
-            
-            i += 1
+        root = (b * b) - (16 * hsq * sens * cv2 * (mu + sens * cv2 + msg)) - (4 * hsq * msg * (msg + (2 * mu)))
+        root = (b - math.sqrt(root)) * b
+        div = 4 * this.mass * sens * hsq
 
-        return max_tire_g
+        return root / div
 
     def rpm_from_velocity(this, velocity):
         wheel_rps = velocity / (this.wheel_radius * 2 * math.pi)
@@ -184,13 +192,13 @@ class vehicle:
         return this.coeff_fric_lon  
 
     def get_downforce(this, velocity):
-        return (this.downforce_area * (velocity**2))
+        return (this.downforce_area * (velocity**2) * AIRDENSITY)
 
     def plot_elipse(this, ax):
         t = np.linspace(0, 360, 60)
         velocity = np.linspace(0.001, 6500 / (60 * this.final_drive_ratio) * this.tire_circumference, 20)
 
-        df_mult = ((this.mass * 9.81) + this.get_downforce(velocity)) / (this.mass * 9.81)
+        df_mult = ((this.mass * GRAV) + this.get_downforce(velocity)) / (this.mass * GRAV)
         
         xvals = []
         yvals = []
@@ -220,18 +228,16 @@ class vehicle:
         ax.plot_surface(x, y, z, rstride=20, cstride=10, cmap=matplotlib.cm.coolwarm)
 
 if __name__ == '__main__':
-    v = vehicle(280, 2, 1.5, polynomial([-0.0001, 1.5]), polynomial([1.25]), 0.23,
-                polynomial([0.5]), polynomial([0.5]), 
-                3.3, polynomial([0.94]), 0.98, 
-                0.5, 0.5, 
-                300, polynomial([7.01587e-7, 0, 0.0793916, -19.2291, 1525.91552, 0]), 6.2, True
-                )
-    
-    fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
-   
-    max_speed = 6500 / (60 * v.final_drive_ratio) * v.tire_circumference
+    v = VEHICLE_V67 
 
-    v.plot_elipse(ax)
-
-    plt.title("Max accleration at speed and SOC")
+    x = np.linspace(0, v.max_speed, 30)
+    y = [v.max_lat_accel_g(xh) for xh in x]
+    plt.plot(x, y)
     plt.show()
+
+    #fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
+   
+    #v.plot_elipse(ax)
+
+    #plt.title("Max accleration at speed and SOC")
+    #plt.show()
