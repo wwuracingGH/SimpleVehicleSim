@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import matplotlib
 from scipy import signal
 
-TRACKDENSITY = 4 #how many line segments per meter
+TRACKDENSITY = 0.252 #how many line segments per meter
 
 BEZIERDENSITY = 200 #how many points are measured on each bezier
 
@@ -19,7 +19,7 @@ class segment:
         self.s = dist
 
 class trackDef:
-    def __init__(self, segments : list[segments], length, halfwidth):
+    def __init__(self, segments : list[segment], length, halfwidth):
         self.segments = segments
         self.length = ((len(segments) - 1) / TRACKDENSITY)
         self.width = halfwidth
@@ -352,7 +352,7 @@ def from_points(points, dists):
     for i in range(len(points)):
         segs.append(segment(points[i], curves[i], normal=(math.cos(headings[i]),math.sin(headings[i])), dist=(dists[i]) - bs))
 
-    return trackDef(segs, 2, (dists[i] - dists[-1]))
+    return trackDef(segs, (dists[i] - dists[-1]), 2)
 
 def segs_from_defs(defs, startpos, startnorm):  
     segments = []
@@ -449,8 +449,16 @@ def TrackFromLR(fp, width):
     return trackDef(segments, dist, width)
  
 if __name__ == '__main__':
-    track = trackFromBezierCSV("res/tracks/defaulttrack.csv", 3.5, 1.55)
-    print(track.length)
+    track = trackFromBezierCSV("res/data/elinebz.csv", 3.5)
+    dat = parse_csv('res/data/eline.csv')
+    track2 = from_points(list(zip(dat['X'], dat['Y'])), [s * 1000 for s in dat['s']])
+    print(len(track.segments))
+    for s in track.segments:
+        print(-s.c)
+    plt.plot(np.linspace(0,1000,len(track.segments)), [-s.c for s in track.segments])
+    plt.plot(np.linspace(0,1000,len(track2.segments)), [s.c for s in track2.segments])
+    plt.show()
+    sys.exit(0)
     
     plt.gca().set_aspect('equal')
     
