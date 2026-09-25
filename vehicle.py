@@ -8,6 +8,33 @@ import math, matplotlib
 AIRDENSITY = 1.204
 GRAV       = 9.806
 
+def get_tir_coefs(file_path):
+    tir_file = open(file_path,'r')
+    lines = tir_file.readlines()
+
+    coefs = {
+        'FNOMIN': 4000,
+        'LFZO': 1,
+        'PDX1': 1.3,
+        'PDX2': -0.15,
+        'LMUX': 1,
+        'PDY1': 1.1,
+        'PDY2': -0.15,
+        'LMUY': 1,
+    }
+
+    for line in lines:
+        line = line.strip()
+        if line and not line.startswith(('$', '!', '[')):
+            param = line.split('=')[0].strip()
+            value = line.split('=')[1].split('$')[0].strip()
+            if param not in coefs:
+                continue
+            coefs[param] = float(value) # prob should put in try block later but all we need are floats
+
+    tir_file.close()
+    return coefs
+
 class polynomial:
     def __init__(this, values : list[float]):
         this.values = values
@@ -18,6 +45,15 @@ class polynomial:
         for i in range(1, this.max_power):
             n += this.values[- (i + 1)] * x ** i
         return n
+
+def tir_to_mu(coefs, scale_lon=1, scale_lat=1):
+    LMUX = coefs['LMUX'] * scale_lon
+    LMUY = coefs['LMUY'] * scale_lat
+
+    fz0 = coefs['FNOMIN'] * coefs['LFZO']
+    lon = polynomial([LMUX*coefs['PDX2']/fz0, LMUX*(coefs['PDX1'] - coefs['PDX2'])])
+    lat = polynomial([LMUY*coefs['PDY2']/fz0, LMUY*(coefs['PDY1'] - coefs['PDY2'])])
+    return lon, lat
 
 class lookuptable_2D:
     def __init__(this, values : list[list[float]], xmin=0, xmax=1, ymin=0, ymax=1):
@@ -37,8 +73,9 @@ class vehicle:
             mass                : float,
             wheelbase           : float,
             trackwidth          : float,
-            coeff_fric_lon      : polynomial, # coeff per load N
-            coeff_fric_lat      : polynomial, # coeff per load N
+            tir_file_path       : string,
+            #coeff_fric_lon      : polynomial, # coeff per load N
+            #coeff_fric_lat      : polynomial, # coeff per load N
             wheel_radius        : float,
             cg_height           : float,
             cg_bal              : float,      # often called 'a'
@@ -57,12 +94,15 @@ class vehicle:
             capacity            : float,
             # Misc
             AWD                 : bool = False
-            ):
+        ):
         this.mass = mass
         this.wheelbase = wheelbase
         this.trackwidth = trackwidth
-        this.coeff_fric_lon = coeff_fric_lon
-        this.coeff_fric_lat = coeff_fric_lat
+
+        coefs = get_tir_coefs(tir_file_path)
+        this.coeff_fric_lon, this.coeff_fric_lat = tir_to_mu(coefs)
+        #this.coeff_fric_lon = coeff_fric_lon
+        #this.coeff_fric_lat = coeff_fric_lat
         this.wheel_radius = wheel_radius
 
         this.cg_height = cg_height
@@ -138,7 +178,7 @@ class vehicle:
 
         root = (b * b) - (16 * hsq * sens * cv2 * (mu + sens * cv2 + msg)) - (4 * hsq * msg * (msg + (2 * mu)))
         root = (b - math.sqrt(root)) * b
-        div = 4 * this.mass * sens * hsq
+        div = 4 * this.mass * GRAV * sens * hsq # for some reason grav wasnt here?
 
         return root / div
 
@@ -170,7 +210,7 @@ class vehicle:
 
         root = (b * b) - (16 * hsq * sens * cv2 * (mu + sens * cv2 + msg)) - (4 * hsq * msg * (msg + (2 * mu)))
         root = (b - math.sqrt(root)) * b
-        div = 4 * this.mass * sens * hsq
+        div = 4 * this.mass * GRAV * sens * hsq
 
         return root / div
 

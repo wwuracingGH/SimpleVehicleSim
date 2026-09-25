@@ -28,8 +28,7 @@ VEHICLE_V67 = vehicle(
             cg_height         = 0.272,
             cg_bal            = 0.52, 
             # Tires
-            coeff_fric_lon    = polynomial([1.40]), 
-            coeff_fric_lat    = polynomial([1.35]), 
+            tir_file_path     = './res/tires/jacks_fictional_test_tire.tir', 
             wheel_radius      = 0.20, 
             # Drivetrain
             final_drive_ratio = 3.0, 
