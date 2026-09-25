@@ -7,6 +7,8 @@ import scipy.interpolate as sc
 import math, matplotlib
 AIRDENSITY = 1.204
 GRAV       = 9.806
+REGEN_MIN_SPEED = 5 / 3.6 # rules don't allow regen below 5 km/h 
+#source: trust me bro
 
 def get_tir_coefs(file_path):
     tir_file = open(file_path,'r')
@@ -46,7 +48,7 @@ class polynomial:
             n += this.values[- (i + 1)] * x ** i
         return n
 
-def tir_to_mu(coefs, scale_lon=1, scale_lat=1):
+def tir_to_mu(coefs, scale_lon=0.65, scale_lat=0.65): # 0.65 because ttc data is big
     LMUX = coefs['LMUX'] * scale_lon
     LMUY = coefs['LMUY'] * scale_lat
 
@@ -93,7 +95,8 @@ class vehicle:
             max_power_per_soc   : polynomial,
             capacity            : float,
             # Misc
-            AWD                 : bool = False
+            AWD                 : bool = False,
+            rolling_resistance  : float = 0.015  # Crr
         ):
         this.mass = mass
         this.wheelbase = wheelbase
@@ -112,6 +115,7 @@ class vehicle:
         this.pack_efficiency  = pack_efficiency
         this.motor_efficiency = motor_efficiency
         this.drive_efficiency = drive_efficiency
+        this.max_regen_watts  = max_regen_watts
 
         this.drag_area = drag_area
         this.downforce_area = downforce_area
@@ -124,10 +128,11 @@ class vehicle:
         this.max_speed = 6500 / (60 * final_drive_ratio) * this.tire_circumference
 
         this.AWD = AWD
+        this.rolling_resistance = rolling_resistance
 
         # END
 
-    def max_accel_g(this, velocity : float, soc : float):
+    def max_accel_g(this, velocity : float, soc : float, power_cap : float = None):
         motor_rps = (velocity / this.tire_circumference) * this.final_drive_ratio
         if motor_rps * 60 > 6500: return 0
         
@@ -152,7 +157,10 @@ class vehicle:
 
         max_tire_g = max_tire_force / (this.mass * GRAV)
         max_tire_torque = max_tire_force * this.wheel_radius / this.final_drive_ratio
-        max_battery_torque = (this.max_power_per_soc.f(soc) * 9.54929677 / (motor_rps * 60))
+        battery_power = this.max_power_per_soc.f(soc)
+        if power_cap is not None:
+            battery_power = min(battery_power, power_cap)
+        max_battery_torque = (battery_power * 9.54929677 / (motor_rps * 60))
         max_motor_torque = min(this.max_torque, max_battery_torque) * this.drive_efficiency * this.motor_efficiency.f(motor_rps * 60, min(min(max_battery_torque, max_tire_torque), this.max_torque))
 
         max_motor_force = max_motor_torque * this.final_drive_ratio / this.wheel_radius
@@ -191,7 +199,6 @@ class vehicle:
         for _ in range(0, 10):
             velocity = math.sqrt(this.max_lat_accel_g(velocity) * GRAV * radius)
 
-        print(velocity, curvature)
         return velocity 
 
     def max_braking_accel_g(this, velocity):
@@ -227,6 +234,29 @@ class vehicle:
 
     def get_drag(this, velocity):
         return (this.drag_area * (velocity**2) * 1.2)
+
+    def get_rolling_resistance(this, velocity):
+        return this.rolling_resistance * (this.mass * GRAV + this.get_downforce(velocity))
+
+    def motor_efficiency_at(this, rpm, torque):
+        me = this.motor_efficiency
+        return float(me.f(min(max(rpm, me.xmin), me.xmax), min(max(torque, me.ymin), me.ymax)))
+
+    # power drawn from the pack to put force down at velocity
+    def battery_power(this, force, velocity, soc=100):
+        rpm = this.rpm_from_velocity(velocity)
+        if force >= 0:
+            torque = force * this.wheel_radius / (this.final_drive_ratio * this.drive_efficiency)
+            eff = this.drive_efficiency * this.motor_efficiency_at(rpm, torque)
+            return force * velocity / eff
+
+        if velocity < REGEN_MIN_SPEED:
+            return 0
+        # im capping it off of motor torque and recharge rate but idk if this is accurate
+        regen_force = min(-force, this.max_torque * this.final_drive_ratio / this.wheel_radius)
+        torque = regen_force * this.wheel_radius / this.final_drive_ratio
+        eff = this.drive_efficiency * this.motor_efficiency_at(rpm, torque)
+        return -min(regen_force * velocity * eff, this.max_regen_watts.f(soc))
 
     def get_tire_f(this, normal_force):
         return this.coeff_fric_lon  

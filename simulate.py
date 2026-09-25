@@ -60,8 +60,28 @@ class Simulation:
     def change_in_w_over_s(ds, dw_t):
         return (1.0/ds) * dw_t
 
-    def run_endurance(self, vehicledata):
-        pass
+    # driver cant 100% throttle for whole endurance on one pack so get highest power limit that still finishes
+    @staticmethod
+    def run_endurance(vehicledata : vehicle, laps=22, usable_fraction=0.9, min_power=5000):
+        budget = vehicledata.capacity * usable_fraction
+        power_cap = vehicledata.max_power_per_soc.f(100)
+        lap_time, lap_kwh = Simulation.run_autocross_basic(vehicledata, power_cap, plot=False)
+
+        if lap_kwh * laps > budget:
+            lo, hi = min_power, power_cap
+            for _ in range(15):
+                mid = (lo + hi) / 2
+                if Simulation.run_autocross_basic(vehicledata, mid, plot=False)[1] * laps <= budget:
+                    lo = mid
+                else:
+                    hi = mid
+            power_cap = lo
+            lap_time, lap_kwh = Simulation.run_autocross_basic(vehicledata, power_cap, plot=False)
+
+        print(f'endurance: {power_cap / 1000:.1f}kw limit, {lap_time:.2f}s per lap, {lap_kwh * 1000:.0f}wh per lap, '
+              f'{lap_time * laps:.1f}s, {lap_kwh * laps:.2f}kwh total')
+
+        return lap_time * laps, lap_kwh * laps
 
     def __init__(self, vehicledata : vehicle, track : trackDef):
         self.vehicledata = vehicledata
@@ -92,7 +112,9 @@ class Simulation:
         self.Up_mat = [(0, 0, 0)] * 80 # control variable vector
         self.Xp_mat = []
 
-    def run_autocross_basic(vehicledata : vehicle):
+    # returns lap time and pack energy used
+    @staticmethod
+    def run_autocross_basic(vehicledata : vehicle, power_cap : float = None, plot=True):
         d = parse_csv('res/data/eline.csv')
         points = list(zip(d['X'], d['Y']))
         fake_times = [i - d['I'][0] for i in d['I']]
@@ -153,9 +175,7 @@ class Simulation:
         tq_req = [0] * len(mv)
         last_v = mv[-1]
         last_c = cv[-1]
-        print('accel')
-        power_used = 0
-        ticks_accel = 0
+        energy = 0
         time = 0
         times = []
         dtimes = []
@@ -174,32 +194,35 @@ class Simulation:
 
             a_c = (last_v * last_v) * abs(last_c)
             max_accel_y = vehicledata.max_lat_accel_g(last_v) * 9.806
-            max_accel_a, tq_req[i] = vehicledata.max_accel_g(last_v, 100)
+            max_accel_a, tq_req[i] = vehicledata.max_accel_g(last_v, 100, power_cap)
             max_accel_a = max_accel_a * 9.806 * math.sqrt(1 - (min(a_c / max_accel_y, 1))**2) # traction ellipse
 
             v_final[i] = abs(max_accel_a) * dt + last_v
             if v_final[i] > mvf[i]:
                 v_final[i] = mvf[i]
-            else:
-                acceleration = max_accel_a
-                accels[i] = max_accel_a
-                Pow = vehicledata.mass * 2 * acceleration * ds * (1 / vehicledata.drivetrain_efficiency_at(acceleration, v_final[i]))
-                ticks_accel += 1
-                power_used += Pow
-                powers[i] = Pow
+
+            # energy for this step thats actually made + drag and rolling losses so cruising and braking count too
+            v_avg = (v_final[i] + last_v) / 2
+            accels[i] = (v_final[i]**2 - last_v**2) / (2 * ds) if ds > 0 else 0
+            force = vehicledata.mass * accels[i] + vehicledata.get_drag(v_avg) + vehicledata.get_rolling_resistance(v_avg)
+            powers[i] = vehicledata.battery_power(force, v_avg)
+            energy += powers[i] * ds / v_avg
             last_c = cv[i]
             last_v = v_final[i]
             last_s = this_s
 
-        print('time:', time, 'energy:', power_used / 3600)
+        energy /= 3600000 # i have a burning hatred for kwh
+        if not plot:
+            return time, energy
 
+        print(f'lap time: {time:.2f}s, energy: {energy * 1000:.0f}Wh')
         plt.plot(np.linspace(0, 1000, len(mv)), mvf)
         plt.plot(np.linspace(0, 1000, len(mv)), v_final)
         plt.plot(np.linspace(0, 1000, len(mv)), [v for v in d['V']])
         plt.scatter([(1000/249) * i for i in inflections], [d['V'][i] for i in inflections])
         plt.show()
 
-        return time * 22, power_used / 3600 * 22
+        return time, energy
 
     @staticmethod
     def run_skidpad_basic(vehicledata : vehicle, radius):
@@ -323,7 +346,8 @@ if __name__ == '__main__':
     skidpad_time = Simulation.run_skidpad_basic(car, 9)
     print_event_results(CompetitionScores.NAMES_SKID, skidpad_time * 1.02, AllComp)
 
-    print_all_events(c_sc, p_sc, d_sc, accel_time, skidpad_time, 48, 1470, 4.0, AllComp)
+    enduro_time, enduro_kwh = Simulation.run_endurance(car)
+    print_all_events(c_sc, p_sc, d_sc, accel_time, skidpad_time, 48, enduro_time, enduro_kwh, AllComp)
 
     xinterp,yinterp = np.meshgrid(np.linspace(0,6500,50), np.linspace(0,250,50))
     zinterp = np.fromfunction(lambda x, y : car.motor_efficiency.f(6500 * y/49, 250 * x/49), (50,50))
