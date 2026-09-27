@@ -7,6 +7,35 @@ import scipy.interpolate as sc
 import math, matplotlib
 AIRDENSITY = 1.204
 GRAV       = 9.806
+REGEN_MIN_SPEED = 5 / 3.6 # rules don't allow regen below 5 km/h 
+#source: trust me bro
+
+def get_tir_coefs(file_path):
+    tir_file = open(file_path,'r')
+    lines = tir_file.readlines()
+
+    coefs = {
+        'FNOMIN': 4000,
+        'LFZO': 1,
+        'PDX1': 1.3,
+        'PDX2': -0.15,
+        'LMUX': 1,
+        'PDY1': 1.1,
+        'PDY2': -0.15,
+        'LMUY': 1,
+    }
+
+    for line in lines:
+        line = line.strip()
+        if line and not line.startswith(('$', '!', '[')):
+            param = line.split('=')[0].strip()
+            value = line.split('=')[1].split('$')[0].strip()
+            if param not in coefs:
+                continue
+            coefs[param] = float(value) # prob should put in try block later but all we need are floats
+
+    tir_file.close()
+    return coefs
 
 
 class polynomial:
@@ -24,6 +53,15 @@ v67_battery_r = polynomial([2.2388096172e-8,-0.00000491854642229,0.0003672153552
 
 def get_battery_r(soc_percent, temp_c):
     return v67_battery_r.f(soc_percent) * ((73.52577 / temp_c) - 0.927307)
+
+def tir_to_mu(coefs, scale_lon=0.65, scale_lat=0.65): # 0.65 because ttc data is big
+    LMUX = coefs['LMUX'] * scale_lon
+    LMUY = coefs['LMUY'] * scale_lat
+
+    fz0 = coefs['FNOMIN'] * coefs['LFZO']
+    lon = polynomial([LMUX*coefs['PDX2']/fz0, LMUX*(coefs['PDX1'] - coefs['PDX2'])])
+    lat = polynomial([LMUY*coefs['PDY2']/fz0, LMUY*(coefs['PDY1'] - coefs['PDY2'])])
+    return lon, lat
 
 class lookuptable_2D:
     def __init__(this, values : list[list[float]], xmin=0, xmax=1, ymin=0, ymax=1):
@@ -43,8 +81,9 @@ class vehicle:
             mass                : float,
             wheelbase           : float,
             trackwidth          : float,
-            coeff_fric_lon      : polynomial, # coeff per load N
-            coeff_fric_lat      : polynomial, # coeff per load N
+            tir_file_path       : string,
+            #coeff_fric_lon      : polynomial, # coeff per load N
+            #coeff_fric_lat      : polynomial, # coeff per load N
             wheel_radius        : float,
             cg_height           : float,
             cg_bal              : float,      # often called 'a'
@@ -64,13 +103,17 @@ class vehicle:
             max_power_per_soc   : polynomial,
             capacity            : float,
             # Misc
-            AWD                 : bool = False
-            ):
+            AWD                 : bool = False,
+            rolling_resistance  : float = 0.015  # Crr
+        ):
         this.mass = mass
         this.wheelbase = wheelbase
         this.trackwidth = trackwidth
-        this.coeff_fric_lon = coeff_fric_lon
-        this.coeff_fric_lat = coeff_fric_lat
+
+        coefs = get_tir_coefs(tir_file_path)
+        this.coeff_fric_lon, this.coeff_fric_lat = tir_to_mu(coefs)
+        #this.coeff_fric_lon = coeff_fric_lon
+        #this.coeff_fric_lat = coeff_fric_lat
         this.wheel_radius = wheel_radius
 
         this.cg_height = cg_height
@@ -95,6 +138,7 @@ class vehicle:
         this.max_speed = this.motor_efficiency.xmax / (60 * final_drive_ratio) * this.tire_circumference
 
         this.AWD = AWD
+        this.rolling_resistance = rolling_resistance
 
         # END
 
@@ -228,6 +272,29 @@ class vehicle:
 
     def get_drag(this, velocity):
         return (this.drag_area * (velocity**2) * 1.2)
+
+    def get_rolling_resistance(this, velocity):
+        return this.rolling_resistance * (this.mass * GRAV + this.get_downforce(velocity))
+
+    def motor_efficiency_at(this, rpm, torque):
+        me = this.motor_efficiency
+        return float(me.f(min(max(rpm, me.xmin), me.xmax), min(max(torque, me.ymin), me.ymax)))
+
+    # power drawn from the pack to put force down at velocity
+    def battery_power(this, force, velocity, soc=100):
+        rpm = this.rpm_from_velocity(velocity)
+        if force >= 0:
+            torque = force * this.wheel_radius / (this.final_drive_ratio * this.drive_efficiency)
+            eff = this.drive_efficiency * this.motor_efficiency_at(rpm, torque)
+            return force * velocity / eff
+
+        if velocity < REGEN_MIN_SPEED:
+            return 0
+        # im capping it off of motor torque and recharge rate but idk if this is accurate
+        regen_force = min(-force, this.max_torque * this.final_drive_ratio / this.wheel_radius)
+        torque = regen_force * this.wheel_radius / this.final_drive_ratio
+        eff = this.drive_efficiency * this.motor_efficiency_at(rpm, torque)
+        return -min(regen_force * velocity * eff, this.max_regen_watts.f(soc))
 
     def get_tire_f(this, normal_force):
         return this.coeff_fric_lon  

@@ -48,59 +48,27 @@ pack_voltage_per_soc = polynomial([3.559939e-13,-1.817463e-10,3.984486e-8,-0.000
 
 
 VEHICLE_V67 = vehicle(
-        mass              = 280, 
-        wheelbase         = 1.540,
-        trackwidth        = 1.175,
-        cg_height         = 0.272,
-        cg_bal            = 0.52, 
-        # Tires
-        coeff_fric_lon    = polynomial([1.40]), 
-        coeff_fric_lat    = polynomial([1.35]), 
-        wheel_radius      = 0.20, 
-        # Drivetrain
-        final_drive_ratio = 3.0,
-        pack_efficiency   = lookuptable_2D([[1,1],[1,1]]),
-        motor_efficiency  = EMRAX228_Efficiency, 
-        drive_efficiency  = 0.95,
-        regen_mix         = 0.3,
-        max_regen_watts   = polynomial([12000]),
-        pack_voltage_curve= pack_voltage_per_soc,
-        # Aero
-        drag_area         = 0.5, 
-        downforce_area    = 0.0, 
-        # High Voltage
-        max_torque        = 220, #EMRAX228_MaxTorque,
-        max_power_per_soc = polynomial([78000]), 
-        capacity          = 5.8,
-        # All wheel drive
-        AWD=False
-)
-
-VEHICLE_V67_HUBS = vehicle(
-        mass              = 280, 
-        wheelbase         = 1.540,
-        trackwidth        = 1.175,
-        cg_height         = 0.272,
-        cg_bal            = 0.52, 
-        # Tires
-        coeff_fric_lon    = polynomial([1.40]), 
-        coeff_fric_lat    = polynomial([1.35]), 
-        wheel_radius      = 0.20,
-        # Drivetrain
-        final_drive_ratio = 11.0,
-        pack_efficiency   = lookuptable_2D([[1,1],[1,1]]),
-        motor_efficiency  = FISCHER_Efficiency,
-        drive_efficiency  = 0.90,
-        pack_voltage_curve= pack_voltage_per_soc, 
-        regen_mix         = 0.3,
-        max_regen_watts   = polynomial([12000]),
-        # Aero
-        drag_area         = 0.5, 
-        downforce_area    = 0.0, 
-        # High Voltage
-        max_torque        = FISCHER_MaxTorque,
-        max_power_per_soc = polynomial([80000]), 
-        capacity          = 5.8,
-        # All wheel drive
-        AWD=True
-)
+            mass              = 280, 
+            wheelbase         = 1.540, 
+            trackwidth        = 1.175,
+            cg_height         = 0.272,
+            cg_bal            = 0.52, 
+            # Tires
+            tir_file_path     = './res/tires/jacks_fictional_test_tire.tir', 
+            wheel_radius      = 0.20, 
+            # Drivetrain
+            final_drive_ratio = 3.0, 
+            pack_efficiency   = lookuptable_2D([[1,1],[1,1]]),
+            motor_efficiency  = EMRAX228_Efficiency, 
+            drive_efficiency  = 0.90, 
+            max_regen_watts   = polynomial([5000]),
+            # Aero
+            drag_area         = 0.8, 
+            downforce_area    = 0.0, 
+            # High Voltage
+            max_torque        = EMRAX228_MaxTorque,
+            max_power_per_soc = polynomial([75000]), 
+            capacity          = 5.8,
+            # All wheel drive
+            AWD=False
+        )
