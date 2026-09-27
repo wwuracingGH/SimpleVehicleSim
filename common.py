@@ -1,4 +1,5 @@
 from vehicle import vehicle, polynomial, lookuptable_2D
+import numpy as np
 
 EMRAX228_MaxTorque = 220
 EMRAX228_MaxRPM    = 6500
@@ -21,29 +22,85 @@ EMRAX228_Efficiency = lookuptable_2D(
     ymax = 250
 )
 
+FISCHER_MaxRPM = 24000
+FISCHER_MaxTorque = 26
+
+FISCHER_Efficiency = lookuptable_2D(
+    np.transpose(list(reversed([
+        list(reversed([0.993477,0.986020,0.979344,0.973294,0.967731,0.962531,0.957592,0.952827,0.948166,0.943558,0.938970,0.934386,0.929806,0.925249,0.920753])),
+        list(reversed([0.965892,0.967839,0.968050,0.966945,0.964888,0.962189,0.959102,0.955825,0.952504,0.949226,0.946026,0.942882,0.939718,0.936401,0.932746])),
+        list(reversed([0.936230,0.949197,0.957247,0.961551,0.963127,0.962844,0.961414,0.959398,0.957207,0.955095,0.953168,0.951376,0.949518,0.947241,0.944038])),
+        list(reversed([0.906489,0.930785,0.946793,0.956490,0.961590,0.963554,0.963583,0.962624,0.961363,0.960230,0.959400,0.958787,0.958050,0.956590,0.953551])),
+        list(reversed([0.877930,0.912984,0.936518,0.951274,0.959636,0.963633,0.964935,0.964852,0.964339,0.963994,0.964055,0.964405,0.964566,0.963705,0.960630])),
+        list(reversed([0.851076,0.895871,0.926218,0.945549,0.956849,0.962656,0.965060,0.965704,0.965785,0.966050,0.966802,0.967894,0.968734,0.968280,0.965045])),
+        list(reversed([0.825714,0.879214,0.915661,0.939096,0.953030,0.960450,0.963820,0.965075,0.965627,0.966361,0.967638,0.969292,0.970634,0.970447,0.966991])),
+        list(reversed([0.800894,0.862472,0.904585,0.931828,0.948201,0.957105,0.961346,0.963132,0.964074,0.965189,0.966893,0.969008,0.970760,0.970776,0.967086])),
+        list(reversed([0.774928,0.844799,0.892695,0.923795,0.942606,0.952965,0.958036,0.960313,0.961616,0.963095,0.965229,0.967825,0.970018,0.970271,0.966377])),
+        list(reversed([0.745393,0.825042,0.879668,0.915178,0.936708,0.948633,0.954559,0.957329,0.959020,0.960942,0.963642,0.966898,0.969727,0.970376,0.966330]))
+    ]))),
+    xmax = FISCHER_MaxRPM,
+    ymax = FISCHER_MaxTorque
+)
+
+test_endurance = polynomial([-0.0000112179, 0.00283362, -0.207823, 1.62806, 314.54254, 19987.7622])
+test_endurance2 = polynomial([i * 0.6 for i in [-0.0000112179, 0.00283362, -0.207823, 1.62806, 314.54254, 19987.7622]])
+pack_voltage_per_soc = polynomial([3.559939e-13,-1.817463e-10,3.984486e-8,-0.000004901387,0.0003708557,-0.01779065,0.5376367,-9.805756,97.78221,0])
+
+
 VEHICLE_V67 = vehicle(
-            mass              = 280, 
-            wheelbase         = 1.540, 
-            trackwidth        = 1.175,
-            cg_height         = 0.272,
-            cg_bal            = 0.52, 
-            # Tires
-            coeff_fric_lon    = polynomial([1.40]), 
-            coeff_fric_lat    = polynomial([1.35]), 
-            wheel_radius      = 0.20, 
-            # Drivetrain
-            final_drive_ratio = 3.0, 
-            pack_efficiency   = lookuptable_2D([[1,1],[1,1]]),
-            motor_efficiency  = EMRAX228_Efficiency, 
-            drive_efficiency  = 0.90, 
-            max_regen_watts   = polynomial([5000]),
-            # Aero
-            drag_area         = 0.8, 
-            downforce_area    = 0.0, 
-            # High Voltage
-            max_torque        = EMRAX228_MaxTorque,
-            max_power_per_soc = polynomial([75000]), 
-            capacity          = 5.8,
-            # All wheel drive
-            AWD=False
-        )
+        mass              = 280, 
+        wheelbase         = 1.540,
+        trackwidth        = 1.175,
+        cg_height         = 0.272,
+        cg_bal            = 0.52, 
+        # Tires
+        coeff_fric_lon    = polynomial([1.40]), 
+        coeff_fric_lat    = polynomial([1.35]), 
+        wheel_radius      = 0.20, 
+        # Drivetrain
+        final_drive_ratio = 3.0,
+        pack_efficiency   = lookuptable_2D([[1,1],[1,1]]),
+        motor_efficiency  = EMRAX228_Efficiency, 
+        drive_efficiency  = 0.95,
+        regen_mix         = 0.3,
+        max_regen_watts   = polynomial([12000]),
+        pack_voltage_curve= pack_voltage_per_soc,
+        # Aero
+        drag_area         = 0.5, 
+        downforce_area    = 0.0, 
+        # High Voltage
+        max_torque        = 220, #EMRAX228_MaxTorque,
+        max_power_per_soc = polynomial([78000]), 
+        capacity          = 5.8,
+        # All wheel drive
+        AWD=False
+)
+
+VEHICLE_V67_HUBS = vehicle(
+        mass              = 280, 
+        wheelbase         = 1.540,
+        trackwidth        = 1.175,
+        cg_height         = 0.272,
+        cg_bal            = 0.52, 
+        # Tires
+        coeff_fric_lon    = polynomial([1.40]), 
+        coeff_fric_lat    = polynomial([1.35]), 
+        wheel_radius      = 0.20,
+        # Drivetrain
+        final_drive_ratio = 11.0,
+        pack_efficiency   = lookuptable_2D([[1,1],[1,1]]),
+        motor_efficiency  = FISCHER_Efficiency,
+        drive_efficiency  = 0.90,
+        pack_voltage_curve= pack_voltage_per_soc, 
+        regen_mix         = 0.3,
+        max_regen_watts   = polynomial([12000]),
+        # Aero
+        drag_area         = 0.5, 
+        downforce_area    = 0.0, 
+        # High Voltage
+        max_torque        = FISCHER_MaxTorque,
+        max_power_per_soc = polynomial([80000]), 
+        capacity          = 5.8,
+        # All wheel drive
+        AWD=True
+)

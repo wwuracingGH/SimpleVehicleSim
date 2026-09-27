@@ -2,11 +2,11 @@ from track import trackDef, parse_csv, toTangentCurve, from_points
 from vehicle import vehicle, polynomial, lookuptable_2D
 from scipy.optimize import minimize, NonlinearConstraint
 from scipy.integrate import odeint
-from scipy.signal import resample, argrelextrema
+from scipy.signal import resample, argrelextrema, savgol_filter, butter, lfilter, filtfilt, gauss_spline
+from scipy.ndimage import gaussian_filter1d
 from Scores import CompetitionScores, print_event_results, print_all_events
 import numpy as np
 import sys
-
 
 import matplotlib.pyplot as plt
 import matplotlib
@@ -15,7 +15,6 @@ import math
 from time import sleep
 
 from common import *
-
 
 Scores2023 = CompetitionScores('res/scores/Scores2023.csv', '2023')
 Scores2024 = CompetitionScores('res/scores/Scores2024.csv', '2024')
@@ -60,8 +59,138 @@ class Simulation:
     def change_in_w_over_s(ds, dw_t):
         return (1.0/ds) * dw_t
 
-    def run_endurance(self, vehicledata):
-        pass
+    @staticmethod
+    def run_endurance(vehicledata : vehicle, start_soc, endurance_power : polynomial):
+        d = parse_csv('res/data/eline.csv')
+        points = list(zip(d['X'], d['Y']))
+        fake_times = [i - d['I'][0] for i in d['I']]
+
+        tr2 = from_points(points, list(map(lambda x : x * 1000, d['s'])))
+        px, py = list(map(lambda x : x.p[0], tr2.segments)), list(map(lambda x : x.p[1], tr2.segments))
+        cv = list(map(lambda x : x.c, tr2.segments)) 
+        b, a = butter(5, 0.3, fs=1)
+        mv = [vehicledata.max_velocity_of_c(x) for x in [x for x in d['c2']]]
+        prefiltering = True
+        # Braking Zones
+        last_v = mv[-1]
+        last_s = tr2.segments[-1].s
+        last_c = cv[-1]
+        for i in range(len(mv) - 2, -len(mv) - 1, -1):
+            this_s = tr2.segments[i].s
+            ds = abs(last_s - this_s)
+            if ds > 100:
+                ds = 4
+            dt = abs(ds / last_v)
+
+            a_c = (last_v * last_v) * abs(last_c)
+            max_accel_b = vehicledata.max_braking_accel_g(last_v)
+            max_accel_y = vehicledata.max_lat_accel_g(last_v) * 9.806
+            max_accel_b = max_accel_b * 9.806 * math.sqrt(1 - (min(a_c / max_accel_y, 1))**2) # traction ellipse
+
+            new_v = abs(max_accel_b) * dt + last_v
+            mv[i] = min(new_v, mv[i])
+
+            last_v = mv[i]
+            last_s = this_s
+            last_c = cv[i]
+
+        mvf = mv
+        # prefiltering
+        if prefiltering:
+            last_v = mv[-1]
+            v_a = 0
+            for i in range(0, len(mv)):
+                v = v_a + last_v
+                dv = mv[i] - mv[i-1]
+
+                if dv < 0 and v > mv[i]:
+                    v = mv[i]
+                    v_a = -1# max(v_a * 0.8 + dv * 0.3,-1)
+                else:
+                    v_a += math.copysign(1, mv[i] - v)
+                mvf[i] = v
+                last_v = v
+        plt.plot(np.linspace(0,1000,len(mv)), mvf)
+        # Accel Zones
+        v_final = [0] * len(mv)
+        tq_req = [0] * len(mv)
+        last_v = 4
+        last_c = cv[-1]
+        energy_used = 0
+        time = 0
+        soc = start_soc
+        start_temp = 25
+        delta_t_pack = 0
+        last_s = 0
+        for _lap in range(0, 22):
+            print(f"lap {_lap}")
+            input = [0] * len(mv)
+            first_v = last_v
+            for i in range(0, len(mv)):
+                this_s = tr2.segments[i].s
+                ds = abs(this_s - last_s)
+                if ds > 100:
+                    ds = 4
+                dt = abs(ds / last_v)
+                a_c = (last_v * last_v) * abs(last_c)
+                max_accel_y = vehicledata.max_lat_accel_g(last_v) * 9.806
+                max_accel_a, _ = vehicledata.max_accel_g(last_v, soc * 100, power_curve=endurance_power)
+                max_accel_a = max_accel_a * 9.806
+                max_accel_b = vehicledata.max_braking_accel_g(last_v) * 9.806
+
+                v_m = abs(max_accel_a) * dt + last_v
+                if v_m > mvf[i]:
+                    v_m = mvf[i]
+                    input[i] = (v_m - last_v) / (dt * max_accel_b)
+                else:
+                    power = max_accel_a * vehicledata.mass * v_m
+                    is_trac = power < endurance_power.f(soc)
+                    input[i] = math.sqrt(1 - (min(a_c / max_accel_y, 1))**2) if is_trac else 1
+
+                last_c = cv[i]
+                last_v = v_m
+                last_s = this_s
+
+            last_v = first_v
+
+            input = gaussian_filter1d(input, 0.55)
+
+            for i in range(0, len(mv)):
+                this_s = tr2.segments[i].s
+                ds = abs(this_s - last_s)
+                if ds > 100:
+                    ds = 4
+                dt = abs(ds / (last_v))
+                time += dt
+
+                max_accel_a, tq_req[i] = vehicledata.max_accel_g(last_v, soc * 100, power_curve=endurance_power)
+                max_accel_b = vehicledata.max_braking_accel_g(last_v) * 9.806
+                max_accel_a *= 9.806
+
+                if input[i] < 0:
+                    v_final[i] = max((max_accel_b * dt * input[i]) + last_v, 5)
+                    acceleration = max_accel_b * input[i]
+                else:
+                    v_final[i] = (max_accel_a * dt * input[i]) + last_v
+                    acceleration = max_accel_a * input[i]
+
+                energy, excess_energy = vehicledata.energy_used_at(acceleration, v_final[i], soc * 100, dt, start_temp + delta_t_pack)
+
+                energy_used += energy
+                delta_t_pack += excess_energy / 22440
+                soc -= ((energy + excess_energy) / (vehicledata.capacity * 3600000))
+
+                last_c = cv[i]
+                last_v = v_final[i]
+                last_s = this_s
+
+            plt.plot(np.linspace(0, 1000, len(mv)), v_final)
+
+        plt.plot(np.linspace(0, 1000, len(mv)), [v for v in d['V']])
+        print(f'time:{time:.2f}\tenergy:{energy_used / 3600:.2f}\tsoc_end: {soc*100:.1f}\tchange in temp: {delta_t_pack:.2f}')
+        plt.show()
+
+        return time, energy_used / 3600000
 
     def __init__(self, vehicledata : vehicle, track : trackDef):
         self.vehicledata = vehicledata
@@ -93,27 +222,20 @@ class Simulation:
         self.Xp_mat = []
 
     def run_autocross_basic(vehicledata : vehicle):
-        d = parse_csv('res/data/eline.csv')
-        points = list(zip(d['X'], d['Y']))
+        d = parse_csv('res/data/aline.csv')
         fake_times = [i - d['I'][0] for i in d['I']]
 
-        tr2 = from_points(points, list(map(lambda x : x * 1000, d['s'])))
-        px, py = list(map(lambda x : x.p[0], tr2.segments)), list(map(lambda x : x.p[1], tr2.segments))
-        cv = list(map(lambda x : x.c, tr2.segments))
+        cv = [x for x in d['c2']]
         inflections = argrelextrema(np.array(d['V']), np.less)[0]
-        def istwoaway(i, arr):
-            return i in arr or i-1 in arr or i-2 in arr or i+1 in arr or i+2 in arr
-        #inflection_arr = [d['V'][i] if istwoaway(i, inflections) and d['V'][i] < 14 else 1000 for i in range(0, len(d['V']))]
-        inflection_arr = [100] * len(d['V'])
-        mv = [min(vehicledata.max_velocity_of_c(x.c), v) for x,v in zip(tr2.segments, inflection_arr)]
-
+        b, a = butter(3, 0.25, fs=1)
+        mv = [vehicledata.max_velocity_of_c(x) for x in cv] 
+        prefiltering = False
         # Braking Zones
         last_v = mv[-1]
-        last_s = tr2.segments[-1].s
+        last_s = d['s'][-1]
         last_c = cv[-1]
-        mvf = [0] * len(mv)
         for i in range(len(mv) - 2, -len(mv) - 1, -1):
-            this_s = tr2.segments[i].s
+            this_s = d['s'][i]
             ds = abs(last_s - this_s)
             if ds > 100:
                 ds = 4
@@ -131,75 +253,117 @@ class Simulation:
             last_s = this_s
             last_c = cv[i]
 
-        # prefiltering
-        last_v = mv[-1]
-        v_a = 0
-        for i in range(0, len(mv)):
-            v = v_a + last_v
-            dv = mv[i] - mv[i-1]
-
-            if dv < 0 and v > mv[i]:
-                v = mv[i]
-                v_a = dv * 0.3
-            else:
-                v_a += math.copysign(8 / abs(v), mv[i] - v)
-            mvf[i] = v
-            last_v = v
-
-        mvf = mv
-
         # Accel Zones
-        v_final = [0] * len(mv)
-        tq_req = [0] * len(mv)
-        last_v = mv[-1]
+        last_v = 3
         last_c = cv[-1]
-        print('accel')
         power_used = 0
-        ticks_accel = 0
         time = 0
-        times = []
-        dtimes = []
-        powers = [0] * len(mv)
-        accels = [0] * len(mv)
-        
-        for i in range(0, len(mv)):
-            this_s = tr2.segments[i].s
+        last_s = 0
+        soc = 0.9
+        start_temp = 28.5
+        delta_t_pack = 0
+        energy_used = 0
+        newdists = np.linspace(0,d['s'][-1],1000)
+        mvf = np.interp(newdists, xp=d['s'], fp=mv)
+        cv = np.interp(newdists, xp=d['s'], fp=cv)
+        mvf[0] = 3
+        mvf[1] = 4
+        input = [0] * len(mvf)
+        tq_req = [0] * len(mvf)
+        v_final = [0] * len(mvf)
+        for i in range(0, len(mvf)):
+            this_s = newdists[i]
             ds = abs(this_s - last_s)
             if ds > 100:
                 ds = 4
             dt = abs(ds / last_v)
-            time += dt
-            times.append(time)
-            dtimes.append(dt)
-
             a_c = (last_v * last_v) * abs(last_c)
             max_accel_y = vehicledata.max_lat_accel_g(last_v) * 9.806
-            max_accel_a, tq_req[i] = vehicledata.max_accel_g(last_v, 100)
-            max_accel_a = max_accel_a * 9.806 * math.sqrt(1 - (min(a_c / max_accel_y, 1))**2) # traction ellipse
+            max_accel_a, _ = vehicledata.max_accel_g(last_v, soc * 100)
+            max_accel_a = max_accel_a * 9.806
+            max_accel_b = vehicledata.max_braking_accel_g(last_v) * 9.806
 
-            v_final[i] = abs(max_accel_a) * dt + last_v
-            if v_final[i] > mvf[i]:
-                v_final[i] = mvf[i]
+            v_m = abs(max_accel_a) * dt + last_v
+            if v_m > mvf[i]:
+                v_m = mvf[i]
+                input[i] = (v_m - last_v) / (dt * max_accel_b)
             else:
-                acceleration = max_accel_a
-                accels[i] = max_accel_a
-                Pow = vehicledata.mass * 2 * acceleration * ds * (1 / vehicledata.drivetrain_efficiency_at(acceleration, v_final[i]))
-                ticks_accel += 1
-                power_used += Pow
-                powers[i] = Pow
+                power = max_accel_a * vehicledata.mass * v_m
+                is_trac = power < vehicledata.max_power_per_soc.f(soc)
+                input[i] = math.sqrt(1 - (min(a_c / max_accel_y, 1))**2) if is_trac else 1
+
+            last_c = cv[i]
+            last_v = v_m
+            last_s = this_s
+
+        last_v = 3
+        last_s = 0
+        input = gaussian_filter1d(input, 0.1)
+
+        for i in range(0, len(mvf)):
+            this_s = newdists[i]
+            ds = abs(this_s - last_s)
+            if ds > 100:
+                ds = 4
+            dt = abs(ds / (last_v))
+            time += dt
+
+            max_accel_a, tq_req[i] = vehicledata.max_accel_g(last_v, soc * 100)
+            max_accel_b = vehicledata.max_braking_accel_g(last_v) * 9.806
+            max_accel_a *= 9.806
+
+            if input[i] < 0:
+                v_final[i] = max((max_accel_b * dt * input[i]) + last_v, 0.0001)
+                acceleration = max_accel_b * input[i]
+            else:
+                v_final[i] = (max_accel_a * dt * input[i]) + last_v
+                acceleration = max_accel_a * input[i]
+
+            #energy, excess_energy = vehicledata.energy_used_at(acceleration, v_final[i], soc * 100, dt, start_temp + delta_t_pack)
+
+#            energy_used += energy
+#            delta_t_pack += excess_energy / 22440
+#            soc -= ((energy + excess_energy) / (vehicledata.capacity * 3600000))
+
+#            print(dt, ds, v_final[i])
             last_c = cv[i]
             last_v = v_final[i]
             last_s = this_s
 
+        delta_t_pack = 0
+        test_energy = 0
+        soc = 0.73
+        as_ = []
+        temp = 28.5
+        for i in range(0, len(d['V'])):
+            this_s = d['s'][i]
+            ds = abs(this_s - last_s)
+            if ds > 100:
+                ds = 4
+            dt = abs(ds / last_v)
+
+            v = d['V'][i]
+            a = (v - last_v) / dt
+            as_.append(a)
+            if a > 0:
+                energy, excess_energy = vehicledata.energy_used_at(a, v, soc * 100, dt, temp + delta_t_pack)
+                test_energy += energy
+                delta_t_pack += excess_energy / 22440
+                soc -= ((energy + excess_energy) / (vehicledata.capacity * 3600 * 1000))
+
+            last_s = this_s
+            last_v = v     
+
+        print(f'test soc: {soc:.3f}\ttest energy: {test_energy/3600:.2f}\ttest_dT: {delta_t_pack}')
         print('time:', time, 'energy:', power_used / 3600)
 
-        plt.plot(np.linspace(0, 1000, len(mv)), mvf)
-        plt.plot(np.linspace(0, 1000, len(mv)), v_final)
-        plt.plot(np.linspace(0, 1000, len(mv)), [v for v in d['V']])
-        plt.scatter([(1000/249) * i for i in inflections], [d['V'][i] for i in inflections])
+        plt.plot(newdists, mvf)
+        plt.plot(newdists, v_final)
+        plt.plot(np.linspace(0, d['s'][-1], len(mv)), [v for v in d['V']])
+        plt.scatter([(d['s'][-1]/249) * i for i in inflections], [d['V'][i] for i in inflections])
         plt.show()
 
-        return time * 22, power_used / 3600 * 22
+        return time, power_used / 3600
 
     @staticmethod
     def run_skidpad_basic(vehicledata : vehicle, radius):
@@ -215,7 +379,7 @@ class Simulation:
     @staticmethod
     def run_accel_basic(vehicledata : vehicle, length : float):
         print('\n')
-        time = 0.05 # idk startup time or something
+        time = 0.1 # idk startup time or something
         dt = 0.005
         velocity = 0.001
         distance = -0.3
@@ -285,49 +449,25 @@ class Simulation:
         return vpoints, tpoints, times, time
 
 if __name__ == '__main__':
-    car = vehicle(
-                mass              = 280, 
-                wheelbase         = 1.540, 
-                trackwidth        = 1.175,
-                cg_height         = 0.272,
-                cg_bal            = 0.52, 
-                # Tires
-                coeff_fric_lon    = polynomial([1.40]), 
-                coeff_fric_lat    = polynomial([1.35]), 
-                wheel_radius      = 0.20, 
-                # Drivetrain
-                final_drive_ratio = 3.0, 
-                pack_efficiency   = lookuptable_2D([[1,1],[1,1]]),
-                motor_efficiency  = EMRAX228_Efficiency, 
-                drive_efficiency  = 0.90, 
-                max_regen_watts   = polynomial([5000]),
-                # Aero
-                drag_area         = 0.6, 
-                downforce_area    = 0.0, 
-                # High Voltage
-                max_torque        = EMRAX228_MaxTorque,
-                max_power_per_soc = polynomial([80000]), 
-                capacity          = 5.8,
-                # All wheel drive
-                AWD=False
-            )
+    car = VEHICLE_V67
 
     c_sc =  90 # assuming cost report isn't ignored
-    d_sc = 100 # a reasonable design score if we get our shit together
-    p_sc =  50 # a reasonable score ig
+    d_sc =  80 # a reasonable design score if we get our shit together
+    p_sc =  40 # a reasonable score ig
     # test
     #print_all_events(90.2, 18.8, 65, 4.860, 5.548, 50.077, 1602.185, 3.563, AllComp)
-    Simulation.run_autocross_basic(car)
+    endurance_time, endurance_energy = Simulation.run_endurance(car, 0.95, test_endurance2)
+    autocross_time, _ = Simulation.run_autocross_basic(car)
 
     vp, tp, tm, accel_time = Simulation.run_accel_basic(car, 75)
     print_event_results(CompetitionScores.NAMES_ACCEL, accel_time * 1.02, AllComp) 
     skidpad_time = Simulation.run_skidpad_basic(car, 9)
     print_event_results(CompetitionScores.NAMES_SKID, skidpad_time * 1.02, AllComp)
 
-    print_all_events(c_sc, p_sc, d_sc, accel_time, skidpad_time, 48, 1470, 4.0, AllComp)
+    print_all_events(c_sc, p_sc, d_sc, accel_time, skidpad_time, autocross_time, endurance_time, endurance_energy, AllComp)
 
-    xinterp,yinterp = np.meshgrid(np.linspace(0,6500,50), np.linspace(0,250,50))
-    zinterp = np.fromfunction(lambda x, y : car.motor_efficiency.f(6500 * y/49, 250 * x/49), (50,50))
+    xinterp,yinterp = np.meshgrid(np.linspace(0,car.motor_efficiency.xmax,50), np.linspace(0,car.max_torque * (4 if car.AWD else 1),50))
+    zinterp = np.fromfunction(lambda x, y : car.motor_efficiency.f(car.motor_efficiency.xmax * y/49, car.max_torque * x/49), (50,50))
 
     fig, ax = plt.subplots()
     CS = ax.contour(xinterp,yinterp,zinterp, levels=[0.7,0.75,0.8,0.86,0.90,0.94,0.95,0.96])

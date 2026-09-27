@@ -8,6 +8,7 @@ import math, matplotlib
 AIRDENSITY = 1.204
 GRAV       = 9.806
 
+
 class polynomial:
     def __init__(this, values : list[float]):
         this.values = values
@@ -19,6 +20,11 @@ class polynomial:
             n += this.values[- (i + 1)] * x ** i
         return n
 
+v67_battery_r = polynomial([2.2388096172e-8,-0.00000491854642229,0.000367215355266,-0.0112200142003,0.340835479399])
+
+def get_battery_r(soc_percent, temp_c):
+    return v67_battery_r.f(soc_percent) * ((73.52577 / temp_c) - 0.927307)
+
 class lookuptable_2D:
     def __init__(this, values : list[list[float]], xmin=0, xmax=1, ymin=0, ymax=1):
         this.spline = sc.RegularGridInterpolator((np.linspace(1,0,len(values[0])), np.linspace(1,0,len(values))), np.transpose(values), method='linear') 
@@ -28,7 +34,7 @@ class lookuptable_2D:
     def f(this, x, y):
         xv = (x - this.xmin) / (this.xmax - this.xmin)
         yv = (y - this.ymin) / (this.ymax - this.ymin)
-        return this.spline((yv,xv))
+        return this.spline((np.minimum(1+yv*0, np.maximum(yv, yv*0)), np.minimum(1+xv*0, np.maximum(xv, xv*0))))
 
 class vehicle:
     def __init__(
@@ -47,7 +53,9 @@ class vehicle:
             pack_efficiency     : lookuptable_2D,
             motor_efficiency    : lookuptable_2D, # part of motor efficiency per torque
             drive_efficiency    : float,
-            max_regen_watts     : polynomial,     # state of charge lookup table basically
+            pack_voltage_curve  : polynomial,
+            max_regen_watts     : polynomial,     
+            regen_mix           : float,          # the percentage of braking torque that goes into regen
             # Aero
             drag_area           : float,
             downforce_area      : float,
@@ -72,6 +80,9 @@ class vehicle:
         this.pack_efficiency  = pack_efficiency
         this.motor_efficiency = motor_efficiency
         this.drive_efficiency = drive_efficiency
+        this.max_regen_power = max_regen_watts
+        this.regen_mix = regen_mix
+        this.pack_voltage = pack_voltage_curve
 
         this.drag_area = drag_area
         this.downforce_area = downforce_area
@@ -81,66 +92,93 @@ class vehicle:
         this.capacity = capacity
 
         this.tire_circumference = wheel_radius * np.radians(360)
-        this.max_speed = 6500 / (60 * final_drive_ratio) * this.tire_circumference
+        this.max_speed = this.motor_efficiency.xmax / (60 * final_drive_ratio) * this.tire_circumference
 
         this.AWD = AWD
 
         # END
 
-    def max_accel_g(this, velocity : float, soc : float):
-        motor_rps = (velocity / this.tire_circumference) * this.final_drive_ratio
-        if motor_rps * 60 > 6500: return 0
-        
-        d_force = this.get_downforce(velocity) + (this.mass * GRAV)
+    def max_accel_g(this, velocity : float, soc : float, power_curve:polynomial=None):
+        if velocity > this.max_speed: 
+            return 0, 0
+        motor_rpm = (velocity / this.tire_circumference) * this.final_drive_ratio * 60
 
-        i = 0
-        g_t = 1.4
-        max_tire_g = (g_t * this.cg_bal) / (1 - (g_t * this.cg_height / this.wheelbase))
-        while(i < 10):
-            lon_pos = (max_tire_g * this.cg_height / this.wheelbase) + this.cg_bal
-            lon_neg = 1 - lon_pos
+        if power_curve is None:
+            power_curve = this.max_power_per_soc
 
-            normal_force_rr = lon_neg * d_force
-
-            g_t = this.coeff_fric_lon.f(normal_force_rr / 2)
-            g_t2 = this.coeff_fric_lon.f(normal_force_rr / 2)
-            max_tire_g = (g_t * this.cg_bal) / (1 - (g_t * this.cg_height / this.wheelbase))
-            if (this.AWD): 
-                max_tire_g += (g_t2 * (1 - this.cg_bal)) / (1 + (g_t2 * this.cg_height / this.wheelbase))
-            max_tire_force = max_tire_g * (this.mass * GRAV)
-            i += 1
-
-        max_tire_g = max_tire_force / (this.mass * GRAV)
+        max_tire_g = this.max_tire_g(velocity, False)
+        max_tire_force = max_tire_g * (this.mass * GRAV)
         max_tire_torque = max_tire_force * this.wheel_radius / this.final_drive_ratio
-        max_battery_torque = (this.max_power_per_soc.f(soc) * 9.54929677 / (motor_rps * 60))
-        max_motor_torque = min(this.max_torque, max_battery_torque) * this.drive_efficiency * this.motor_efficiency.f(motor_rps * 60, min(min(max_battery_torque, max_tire_torque), this.max_torque))
+        max_battery_torque = (power_curve.f(soc) * 9.54929677 / motor_rpm) * this.drive_efficiency
+        if not this.AWD:
+            max_battery_torque = (power_curve.f(soc) * 9.54929677 / motor_rpm) * this.drive_efficiency * this.motor_efficiency.f(motor_rpm, min(max_battery_torque, max_tire_torque, this.max_torque))
+            max_motor_torque = min(this.max_torque, max_battery_torque)
+        else:
+            max_battery_g = (power_curve.f(soc) / velocity) / (this.mass * GRAV) * this.drive_efficiency
+            max_g = min(max_battery_g, max_tire_g)
 
-        max_motor_force = max_motor_torque * this.final_drive_ratio / this.wheel_radius
+            rear_balance = this.cg_bal * (this.cg_height / this.wheelbase) * max_g
+            total_torque = ((max_g * GRAV) * this.mass * velocity) * 9.54929677 / motor_rpm
+            rear_motor_torque = min(total_torque * rear_balance * 0.5, this.max_torque)
+            front_motor_torque = min(total_torque * (1-rear_balance) * 0.5, this.max_torque)
+
+            if max_battery_g == max_g:
+                rear_motor_torque *= this.motor_efficiency.f(motor_rpm, rear_motor_torque)
+                front_motor_torque *= this.motor_efficiency.f(motor_rpm, front_motor_torque)
+
+            max_motor_torque = (rear_motor_torque + front_motor_torque) * 2
+
+        max_motor_force = (max_motor_torque) * this.final_drive_ratio / this.wheel_radius
         max_motor_force -= this.get_drag(velocity)
         max_motor_g = max_motor_force / (this.mass * GRAV)
 
         return min(max_motor_g, max_tire_g), min(max_motor_torque, max_tire_torque)
 
+    def max_tire_g(this, velocity : float, lat=True, braking=False):
+        if lat: 
+            mu = this.coeff_fric_lat.values[-1]
+            sens = 0
+            if len(this.coeff_fric_lat.values) == 2:
+                sens = this.coeff_fric_lat.values[0]
+        else:
+            mu = this.coeff_fric_lon.values[-1]
+            sens = 0
+            if len(this.coeff_fric_lon.values) == 2:
+                sens = this.coeff_fric_lon.values[0]
 
-    def max_lat_accel_g(this, velocity : float):
-        mu = this.coeff_fric_lat.values[-1]
-        sens = 0
-        if len(this.coeff_fric_lat.values) == 2:
-            sens = this.coeff_fric_lat.values[0]
+        full_tires = (lat or this.AWD or braking)
 
-        if sens == 0:
-            return (mu * this.mass * GRAV + 2 * mu * this.get_downforce(velocity)) / (this.mass * GRAV)
-
-        msg = this.mass * GRAV * sens
-        b = this.trackwidth
-        hsq = this.cg_height * this.cg_height
+        h = this.cg_height
+        if lat:
+            b = this.trackwidth
+        else:
+            b = this.wheelbase
         cv2 = this.get_downforce(velocity)
 
-        root = (b * b) - (16 * hsq * sens * cv2 * (mu + sens * cv2 + msg)) - (4 * hsq * msg * (msg + (2 * mu)))
-        root = (b - math.sqrt(root)) * b
-        div = 4 * this.mass * sens * hsq
+        if sens == 0 and full_tires:
+            return (mu * this.mass * GRAV + 2 * mu * cv2) / (this.mass * GRAV)
+        elif sens == 0:
+            return mu * b * (this.mass * GRAV + 2 * cv2) / (2 * this.mass * (b - h * mu) * GRAV)
+
+        msg = this.mass * GRAV * sens
+        hsq = this.cg_height * this.cg_height
+
+        if full_tires:
+            root = (b * b) - (16 * hsq * sens * cv2 * (mu + sens * cv2 + msg)) - (4 * hsq * msg * (msg + (2 * mu)))
+            root = (b - math.sqrt(root)) * b
+            div = 4 * hsq * msg
+        else:
+            root = b * (b - 2 * h * (2 * sens * cv2 + msg + mu)) + hsq * mu * mu
+            root = b * (b - h * (msg + 2 * sens * cv2 + mu) - math.sqrt(root))
+            div = 2 * hsq * msg
 
         return root / div
+
+    def max_lat_accel_g(this, velocity : float):
+        return this.max_tire_g(velocity, True) 
+
+    def max_braking_accel_g(this, velocity):
+        return this.max_tire_g(velocity, False, True) 
 
     def max_velocity_of_c(this, curvature):
         c = max(this.coeff_fric_lat.values[-1] * GRAV/(this.max_speed**2), abs(curvature))
@@ -150,29 +188,8 @@ class vehicle:
         velocity = math.sqrt(this.max_lat_accel_g(0) * GRAV * radius)
         for _ in range(0, 10):
             velocity = math.sqrt(this.max_lat_accel_g(velocity) * GRAV * radius)
-
-        print(velocity, curvature)
         return velocity 
-
-    def max_braking_accel_g(this, velocity):
-        mu = this.coeff_fric_lon.values[-1]
-        sens = 0
-        if len(this.coeff_fric_lon.values) == 2:
-            sens = this.coeff_fric_lon.values[0]
-
-        if sens == 0:
-            return (mu * this.mass * GRAV + 2 * mu * this.get_downforce(velocity)) / (this.mass * GRAV)
-
-        msg = this.mass * GRAV * sens
-        b = this.wheelbase
-        hsq = this.cg_height * this.cg_height
-        cv2 = this.get_downforce(velocity)
-
-        root = (b * b) - (16 * hsq * sens * cv2 * (mu + sens * cv2 + msg)) - (4 * hsq * msg * (msg + (2 * mu)))
-        root = (b - math.sqrt(root)) * b
-        div = 4 * this.mass * sens * hsq
-
-        return root / div
+ 
 
     def rpm_from_velocity(this, velocity):
         wheel_rps = velocity / (this.wheel_radius * 2 * math.pi)
@@ -181,9 +198,33 @@ class vehicle:
     def drivetrain_efficiency_at(this, acceleration, velocity):
         rpm = this.rpm_from_velocity(velocity)
         f_a = (acceleration * this.mass) * (1 / this.drive_efficiency) 
-        torque = (f_a / this.final_drive_ratio) * this.wheel_radius
-        m_e = this.motor_efficiency.f(rpm, torque)
+        if not this.AWD:
+            torque = (f_a / this.final_drive_ratio) * this.wheel_radius
+            m_e = this.motor_efficiency.f(rpm, torque)
+        else:
+            rear_balance = this.cg_bal * (this.cg_height / this.wheelbase) * (acceleration / GRAV)
+            torque_r = ((f_a * rear_balance) / this.final_drive_ratio) * this.wheel_radius
+            torque_f = (f_a * (1 - rear_balance) / this.final_drive_ratio) * this.wheel_radius
+            m_e = this.motor_efficiency.f(rpm, torque_r) * rear_balance + this.motor_efficiency.f(rpm, torque_f) * (1 - rear_balance)
+
         return m_e * this.drive_efficiency 
+
+    def energy_used_at(this, acceleration, velocity, soc, dt, temp_c=30):
+        if acceleration > 0: 
+            power = this.mass * 2 * acceleration * (velocity) * (1 / this.drivetrain_efficiency_at(acceleration, velocity))
+        else:
+            power = this.mass * 2 * abs(acceleration) * (velocity) * (1 / this.drivetrain_efficiency_at(abs(acceleration), velocity)) * this.regen_mix
+            power = min(power, this.max_regen_power.f(soc))
+            power = math.copysign(power, acceleration)
+
+        open_voltage = this.pack_voltage.f(soc)
+        r_pack = get_battery_r(soc, temp_c)
+        current = (open_voltage - math.sqrt(open_voltage**2 - 4 * abs(power) * r_pack)) / (2 * r_pack)
+        #print(f'res: {r_pack}\ttemp: {temp_c}\tsoc: {soc}')
+        excess_power = current**2 * r_pack
+
+        return power * dt, excess_power * dt
+                     
 
     def get_drag(this, velocity):
         return (this.drag_area * (velocity**2) * 1.2)

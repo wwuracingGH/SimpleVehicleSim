@@ -6,7 +6,7 @@ from scipy import signal
 
 TRACKDENSITY = 0.252 #how many line segments per meter
 
-BEZIERDENSITY = 200 #how many points are measured on each bezier
+BEZIERDENSITY = 40 #how many points are measured on each bezier
 
 def lerp(a, b, t):
     return (1-t) * a + t * b
@@ -173,7 +173,7 @@ def trackFromBezierCSV(fp, width, scale_factor=1.0):
                 if((distdelta1 := nd - lastPushedDist - (1/TRACKDENSITY)) >= 0.0):
                     nt = (i - (distdelta1 / (nd - lastdist))) / BEZIERDENSITY
 
-                    curve = math.asin(lastnorm[1] * nn[0] - lastnorm[0] * nn[1]) / (nd - lastdist)
+                    curve = math.asin(lastnorm[1] * nn[0] - lastnorm[0] * nn[1]) / distance2D(np, lastpoint)
                     point = cBezierPoint(bp, nt)
                     norm  = cBezierNormal(bp, nt)
 
@@ -449,14 +449,27 @@ def TrackFromLR(fp, width):
     return trackDef(segments, dist, width)
  
 if __name__ == '__main__':
+    dat = parse_csv('res/data/hfe.csv')
+    new_s = [(s - 18.0382) * 1000 for s in dat['s']]
+    #plt.plot(new_s, dat['Y'])
+    b, a = signal.butter(3, 0.01, fs=1)
+    flt_y = signal.filtfilt(b,a,dat['Y'])
+    #plt.plot(new_s, flt_y)
+    dnew = np.linspace(0,new_s[-1],249)
+    ynew = np.interp(dnew,xp=new_s,fp=flt_y)
+    vnew = np.interp(dnew,xp=new_s,fp=dat['V'])
+    inew = np.interp(dnew,xp=new_s,fp=[i / 1000 for i in dat['I']])
+    crv = [(a*9.806)/(v**2) if abs(a) > 0.25 else 0 for a,v in zip(ynew,vnew)]
+    plt.plot(dnew, crv)
+    for i,d in enumerate(crv):
+        print(f'{inew[i]:.4f},{vnew[i]:.4f},{dnew[i]:.4f},{d:.4f}')
+
     track = trackFromBezierCSV("res/data/elinebz.csv", 3.5)
     dat = parse_csv('res/data/eline.csv')
     track2 = from_points(list(zip(dat['X'], dat['Y'])), [s * 1000 for s in dat['s']])
-    print(len(track.segments))
-    for s in track.segments:
-        print(-s.c)
-    plt.plot(np.linspace(0,1000,len(track.segments)), [-s.c for s in track.segments])
-    plt.plot(np.linspace(0,1000,len(track2.segments)), [s.c for s in track2.segments])
+    #for s in track.segments:
+    #    print(-s.c)
+    #plt.plot(dnew, [c.c for c in track.segments])
     plt.show()
     sys.exit(0)
     
